@@ -16,6 +16,7 @@ import requests
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from legado import engine, export
+from legado.fetcher import DEFAULT_UA
 from legado.normalize import merge_hits, dedupe_hits, dedupe_sources
 from selpolicy import (MIN_DRAG, DOUBLE_MS, apply_click, apply_range,
                        apply_rubber, restore_filter)
@@ -51,10 +52,9 @@ VERIFY_WORKERS = 384
 # 所以刻意压低,不要跟着搜索一起调大。
 DOWNLOAD_WORKERS = 10
 
-# 书源校验(照 VerifyBookSource 的判定:GET bookSourceUrl,200 即有效)
-VERIFY_UA = {"user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                           "AppleWebKit/537.36 (KHTML, like Gecko) "
-                           "Chrome/114.0.0.0 Safari/537.36 Edg/114.0.1823.58"}
+# 书源校验:GET bookSourceUrl,status < 400 即有效(与搜索/下载同一套 UA ——
+# 旧 Chrome/114 Edg/114 已被大量站点 WAF 拦截,实测会把活源误判成 401/403)。
+VERIFY_UA = {"user-agent": DEFAULT_UA}
 
 
 def good_table_path(origin: Path) -> Path:
@@ -63,6 +63,13 @@ def good_table_path(origin: Path) -> Path:
     if name.lower().endswith(".json"):
         return origin.with_name(name[:-5] + ".good.json")
     return origin.with_name(origin.stem + ".good.json")
+
+
+def _fmt_reason_summary(summary: dict) -> str:
+    """失效原因分布 → 一行中文日志,按数量降序。"""
+    zh = {"connect": "连不上", "timeout": "超时", "invalid_url": "无URL"}
+    return " · ".join("%s %d" % (zh.get(k, k), v) for k, v in
+                      sorted(summary.items(), key=lambda kv: -kv[1]))
 
 
 VERIFY_ARTIFACT_SUFFIXES = (".good.json", ".error.json")   # 校验产物后缀 = 可再生缓存
@@ -628,21 +635,71 @@ class App:
         self._mem_save_core()
 
     # --------------------------------------------------------- 书源校验 -----
-    # 多文件按序校验:每个勾选的原始表独立 VERIFY_WORKERS 并发探测 → 各自写 .good.json;
-    # 停止 = 当前文件中止 + 后续不再开始(已完成的 good 表保留)。
-    # 照 xin-verify-book-source 的判定:并发 GET bookSourceUrl,200 即有效。
+    # 多文件按序校验:每个勾选的原始表独立 VERIFY_WORKERS 并发探测 → 各自写
+    # .good.json(有效表)与 .error.json(机器可读的失效记录,含原因分类);
+    # 停止 = 当前文件中止 + 后续不再开始(已完成的产物保留)。
+    # 判定:并发 GET bookSourceUrl,status < 400 即有效(202/301 等也算活;
+    # 失败重试一次再定生死。旧版"200 独裁 + 5s 超时 + 老 UA"曾把约六成活源误判失效。
     def _check_one(self, s):
+        """探测单源,返回 (reason, status)。
+
+        reason ∈ ok / timeout / connect(连不上、DNS 死)/ http_<code> / invalid_url;
+        status 为最后一次 HTTP 状态码(非 HTTP 失败为 None);中止返回 None。
+        """
         if self.stop_verify.is_set():
             return None                                          # None = 中止未检测
         url = (s.get("bookSourceUrl") or "").strip()
         if not url:
-            return False
-        try:
-            r = requests.get(url, headers=VERIFY_UA, timeout=5,
-                             verify=False, allow_redirects=True)
-            return r.status_code == 200
-        except Exception:
-            return False
+            return ("invalid_url", None)
+        reason, status = ("connect", None)
+        for _attempt in (0, 1):                                  # 失败重试一次
+            if self.stop_verify.is_set():
+                return None
+            try:
+                r = requests.get(url, headers=VERIFY_UA, timeout=12,
+                                 verify=False, allow_redirects=True)
+                if r.status_code < 400:
+                    return ("ok", r.status_code)
+                reason, status = ("http_%d" % r.status_code, r.status_code)
+            except requests.exceptions.Timeout:
+                reason, status = ("timeout", None)
+            except Exception:
+                reason, status = ("connect", None)
+        return (reason, status)
+
+    @staticmethod
+    def _write_error_table(origin, fn, srcs, results):
+        """写机器可读失效记录 <原名>.error.json,返回原因分布 dict。
+
+        面向 agent/脚本解析:_meta.reason_summary 一眼拿到失效原因分布,
+        failures 逐源记录 name/url/reason/status。后缀已在 VERIFY_ARTIFACT_SUFFIXES
+        中,「清除缓存」与重校验前的清理会把它当可再生缓存带走。
+        """
+        fails, summary = [], {}
+        n_untested = 0
+        for s, r in zip(srcs, results):
+            if r is None:                                        # 中止未检测,不计入
+                n_untested += 1
+                continue
+            if r[0] == "ok":
+                continue
+            reason, status = r
+            summary[reason] = summary.get(reason, 0) + 1
+            fails.append({"source_name": (s.get("bookSourceName") or "").strip(),
+                          "url": (s.get("bookSourceUrl") or "").strip(),
+                          "reason": reason, "status": status})
+        table = {"_meta": {"generated_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+                           "source_file": fn, "total": len(srcs),
+                           "ok": len(srcs) - len(fails) - n_untested,
+                           "failed": len(fails), "untested": n_untested,
+                           "reason_summary": summary},
+                 "failures": fails}
+        out = origin.with_name(origin.stem + ".error.json")
+        tmp = out.with_name(out.name + ".tmp")
+        tmp.write_text(json.dumps(table, ensure_ascii=False, indent=2),
+                       encoding="utf-8")
+        os.replace(tmp, out)
+        return summary
 
     def start_verify(self):
         if self.busy_verify or self.busy_search or self.busy_dl:
@@ -666,7 +723,7 @@ class App:
         self.btn_dl.config(state="disabled")
         self.btn_stop.config(state="normal")
         n_files = len(files)
-        self.log("开始校验 %d 个书源文件(并发 %d · 超时 5s · 只测连通性)…"
+        self.log("开始校验 %d 个书源文件(并发 %d · 超时 12s · status<400 · 重试 1 次)…"
                  % (n_files, VERIFY_WORKERS))
         self.lbl_verify.config(text="校验中 · 文件 0/%d" % n_files)
         threading.Thread(target=self._do_verify, args=(files,), daemon=True).start()
@@ -694,21 +751,21 @@ class App:
             results, done = [], 0
             pool = ThreadPoolExecutor(max_workers=VERIFY_WORKERS)
             try:
-                for ok in pool.map(self._check_one, srcs):
-                    results.append(ok)
+                for r in pool.map(self._check_one, srcs):
+                    results.append(r)
                     done += 1
                     if done % 25 == 0 or done == len(srcs):
-                        n_ok = sum(1 for r in results if r)
-                        n_bad = sum(1 for r in results if r is False)
+                        n_ok = sum(1 for x in results if x and x[0] == "ok")
+                        n_bad = sum(1 for x in results if x and x[0] != "ok")
                         self.q.put(("vprog", (fi + 1, n_files, fn,
                                               done, len(srcs), n_ok, n_bad)))
             except Exception as e:
                 self.q.put(("log", "校验异常(%s): %s" % (fn, e)))
             finally:
                 pool.shutdown(wait=False)
-            n_bad = sum(1 for r in results if r is False)
-            n_ok = sum(1 for r in results if r)
-            n_untested = sum(1 for r in results if r is None)
+            n_bad = sum(1 for x in results if x and x[0] != "ok")
+            n_ok = sum(1 for x in results if x and x[0] == "ok")
+            n_untested = sum(1 for x in results if x is None)
             elapsed = time.time() - t0
             tot_ok += n_ok
             tot_bad += n_bad
@@ -718,13 +775,24 @@ class App:
                 aborted = True
                 break
             if n_ok == 0:
+                # 断网保护:全部失效时清掉旧产物,避免 offline 全灭被缓存成"没有可用源"。
                 self._cleanup_verify_artifacts(fn, origin)
                 self.q.put(("log", "⚠ 文件 %s 全部 %d 个源失效(耗时 %.0fs),已清理旧有效表。"
                                     % (fn, n_bad, elapsed)))
+            # 机器可读的失效记录(含原因分布)落盘,供 agent/脚本读取分析;
+            # 全失效分支上面刚清过旧产物,这里写的是本次的新记录。
+            try:
+                summary = self._write_error_table(origin, fn, srcs, results)
+                if summary:
+                    self.q.put(("log", "失效原因(%s): %s"
+                                % (fn, _fmt_reason_summary(summary))))
+            except Exception as e:
+                self.q.put(("log", "✘ %s 失效记录写入失败: %s" % (fn, e)))
+            if n_ok == 0:
                 continue
             seen, good = set(), []
             for s, r in zip(srcs, results):
-                if r is not False:
+                if r and r[0] == "ok":
                     u = (s.get("bookSourceUrl") or "").strip()
                     if u not in seen:
                         seen.add(u)
