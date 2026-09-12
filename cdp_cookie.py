@@ -197,6 +197,17 @@ def _cdp_call(handle, msg_id, method, params=None, timeout=8):
         ws.close()
 
 
+def is_alive(handle):
+    """浏览器进程还在且调试端口可达(用户手动关窗/进程崩溃都会变 False)。"""
+    if not handle or handle["proc"].poll() is not None:
+        return False
+    try:
+        _http_json(handle["port"], "/json/version")
+        return True
+    except Exception:
+        return False
+
+
 def navigate(handle, url):
     """在既有浏览器中新开标签页打开 url,并关闭其它页面标签(单标签模式)。
 

@@ -1389,6 +1389,8 @@ class App:
                                   "可点「重试抓取」或手动粘贴。", "#cc0000")
                 else:
                     msg = st["msg"]
+                    if "10061" in msg or "积极拒绝" in msg:
+                        msg += " —— 抓取浏览器已关闭或未就绪;重新点「浏览器登录抓取」即可。"
                     if batch["active"]:
                         batch_finish("批量抓取中止: %s" % msg, "#cc0000")
                     else:
@@ -1477,21 +1479,17 @@ class App:
             _stat(msg, color)
             self.log(msg)
 
-        def batch_next():
-            batch["idx"] += 1
-            if batch["idx"] >= len(batch["hosts"]):
-                batch_finish("批量抓取结束: 共处理 %d 个站点,Cookie 已全部注入。"
-                             % len(batch["hosts"]))
-                return
+        def _open_current():
+            """(重新)打开 batch 当前站点的页面,工作线程执行;浏览器死了会自动重开。"""
             host = batch["hosts"][batch["idx"]]
             url = sorted(batch["targets"][host])[0]
-            btn_fetch.config(state="disabled")
-            _stat("批量 %d/%d: 正在打开 %s …"
-                  % (batch["idx"] + 1, len(batch["hosts"]), host))
 
             def _open():
                 try:
-                    if auth_sess["handle"] is None:
+                    if auth_sess["handle"] is None or \
+                            not cdp_cookie.is_alive(auth_sess["handle"]):
+                        if auth_sess["handle"]:
+                            cdp_cookie.close(auth_sess["handle"])
                         auth_sess["handle"] = cdp_cookie.launch_for_auth(
                             url, APP_DIR / "auth_profile")
                     else:
@@ -1504,6 +1502,18 @@ class App:
                                             "msg": "打开 %s 失败: %s" % (host, e)}
 
             threading.Thread(target=_open, daemon=True).start()
+
+        def batch_next():
+            batch["idx"] += 1
+            if batch["idx"] >= len(batch["hosts"]):
+                batch_finish("批量抓取结束: 共处理 %d 个站点,Cookie 已全部注入。"
+                             % len(batch["hosts"]))
+                return
+            host = batch["hosts"][batch["idx"]]
+            btn_fetch.config(state="disabled")
+            _stat("批量 %d/%d: 正在打开 %s …"
+                  % (batch["idx"] + 1, len(batch["hosts"]), host))
+            _open_current()
 
         def batch_start():
             sel = self._auth_kit.get()
@@ -1552,6 +1562,12 @@ class App:
 
             def _grab():
                 try:
+                    if handle is None or not cdp_cookie.is_alive(handle):
+                        # 浏览器被手动关闭等 → 不中止批量, 重新打开当前站点
+                        auth_sess["handle"] = None
+                        self.log("批量: 检测到抓取浏览器已关闭,正在重新打开 %s" % host)
+                        _open_current()
+                        return
                     auth_sess["pending"] = {
                         "state": "captured",
                         "cookie": cdp_cookie.fetch_cookies(handle, host)}
