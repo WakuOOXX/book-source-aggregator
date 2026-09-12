@@ -8,11 +8,44 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from urllib.parse import urljoin
 
 from . import rules
-from .fetcher import fetch
+from .fetcher import fetch, DEFAULT_UA
 from .normalize import (clean_author, clean_kind, clean_last_chapter,
                         clean_name, dedupe_hits, merge_hits)
 
 BOOK_SOURCE_FILE = "bookSource.json"
+
+# ---------------------------------------------------------------- 登录头 ----
+# 每源用户登录态(Cookie/自定义 header),key = bookSourceUrl。
+# GUI 从 shuyuan/auth_state.json 加载并经 set_auth() 注入;没有 GUI 时为空表,
+# 行为与旧版一致(只用书源自带 header)。注入优先级:书源 header 字段 <
+# 内嵌请求头(searchUrl/bookUrl 的 ,{json})< 用户登录头(最高,凭据优先)。
+_AUTH = {}
+
+
+def set_auth(auth):
+    """GUI 启动/保存登录头时刷新模块级注入表。auth = {bookSourceUrl: {...}}"""
+    global _AUTH
+    _AUTH = dict(auth or {})
+
+
+def source_headers(source, extra=None) -> dict:
+    """构造该源请求基础头:书源 header 字段 → extra(内嵌请求头)→ 用户登录头。
+
+    用户 Cookie 整体覆盖低层同名字段。UA 缺省回退 DEFAULT_UA,让校验等
+    不依赖 session 的裸请求也带现代 UA。
+    """
+    headers = dict(rules.parse_header(source.get("header")) or {})
+    if extra:
+        headers.update(extra)
+    user = _AUTH.get((source.get("bookSourceUrl") or "").strip()) or {}
+    uh = user.get("header")
+    if isinstance(uh, dict):
+        headers.update(uh)
+    if user.get("cookie"):
+        headers["Cookie"] = str(user["cookie"])
+    if not headers.get("User-Agent"):
+        headers["User-Agent"] = DEFAULT_UA
+    return headers
 
 
 def load_sources(path=BOOK_SOURCE_FILE):
@@ -118,10 +151,7 @@ def search_sources(sources, key, on_progress=None, stop=None, workers=24,
                 base = (s.get("bookSourceUrl") or "").strip()
                 if base and not req["url"].lower().startswith(("http://", "https://")):
                     req["url"] = urljoin(base, req["url"])
-                headers = rules.parse_header(s.get("header"))
-                if req.get("headers"):
-                    headers = dict(headers or {})
-                    headers.update(req["headers"])
+                headers = source_headers(s, req.get("headers"))
                 url, text = fetch(s.get("bookSourceName", "?"), req["url"], req["method"],
                                   req.get("body", ""), headers, _clamp_timeout(s))
             except Exception:
@@ -221,10 +251,7 @@ def fetch_book_info(source, book_url, timeout=None):
         return {}
     try:
         req = rules.parse_request(book_url, {})
-        headers = rules.parse_header(source.get("header"))
-        if req.get("headers"):
-            headers = dict(headers or {})
-            headers.update(req["headers"])
+        headers = source_headers(source, req.get("headers"))
         url, text = fetch(source.get("bookSourceName", "?"), req["url"],
                           req["method"], req.get("body", ""), headers,
                           timeout if timeout else _clamp_timeout(source))
@@ -270,7 +297,7 @@ def _resolve_toc_url(source, book_url, timeout=None):
         return book_url
     try:
         req = rules.parse_request(book_url, {})
-        headers = rules.parse_header(source.get("header"))
+        headers = source_headers(source, req.get("headers"))
         url, text = fetch(source.get("bookSourceName", "?"), req["url"], req["method"],
                           req.get("body", ""), headers,
                           timeout if timeout else _clamp_timeout(source))
@@ -300,7 +327,7 @@ def fetch_toc(source, book_url, on_progress=None, stop=None, timeout=None, deadl
     seen = set()
     cur = toc_url
     guard = 0
-    headers = rules.parse_header(source.get("header"))
+    headers = source_headers(source)
     while cur and guard < 8:
         guard += 1
         if deadline is not None and time.time() > deadline and guard > 1:
@@ -425,7 +452,7 @@ def load_book(hit, on_progress=None, stop=None, workers=8, toc=None):
     if total == 0:
         raise RuntimeError("目录为空(可能需登录或被封)")
     chapters = [None] * total
-    headers = rules.parse_header(source.get("header"))
+    headers = source_headers(source)
     base = hit["book_url"]
 
     def one(i):

@@ -48,13 +48,16 @@ STATE_FILE = APP_DIR / "sel_state.json"    # 多选/选中项记忆 + 校验原�
 # 12s 超时下界:实测 240 个源在并发 40~600 之间都是 12s 左右。
 SEARCH_WORKERS = 384
 VERIFY_WORKERS = 384
+# 校验搜索兜底:这些失效原因的源值得用真实搜索规则复测(首页被 WAF 拦/超时
+# ≠ 源不可用,起点 202、69书吧 403 这类首页拦爬虫但搜索接口正常的源很多)。
+SEARCH_FALLBACK_REASONS = {"timeout", "http_403", "http_429", "http_503"}
 # 正文下载是另一回事:同一本书的章节全来自同一个站,并发越高越容易触发限流/封禁,
 # 所以刻意压低,不要跟着搜索一起调大。
 DOWNLOAD_WORKERS = 10
 
-# 书源校验:GET bookSourceUrl,status < 400 即有效(与搜索/下载同一套 UA ——
-# 旧 Chrome/114 Edg/114 已被大量站点 WAF 拦截,实测会把活源误判成 401/403)。
-VERIFY_UA = {"user-agent": DEFAULT_UA}
+# 书源校验的请求头统一走 engine.source_headers(书源 header + 用户登录头/Cookie,
+# UA 缺省 DEFAULT_UA)—— 旧版独立 VERIFY_UA(Chrome/114 Edg/114)已被 WAF 大量
+# 拦截,且连书源自带 header 都不传,是误判失效的元凶之一(2026-09-12 v1.5.5/5.6)。
 
 
 def good_table_path(origin: Path) -> Path:
@@ -70,6 +73,31 @@ def _fmt_reason_summary(summary: dict) -> str:
     zh = {"connect": "连不上", "timeout": "超时", "invalid_url": "无URL"}
     return " · ".join("%s %d" % (zh.get(k, k), v) for k, v in
                       sorted(summary.items(), key=lambda kv: -kv[1]))
+
+
+def auth_state_path() -> Path:
+    """每源登录头存储:shuyuan/auth_state.json。
+
+    属用户凭据,**不属于缓存** —— 「清除缓存」不清理,只能在新加的
+    「登录头」管理窗口里查看/修改/清空。写入与 good 表同款原子写。
+    """
+    return SOURCE_DIR / "auth_state.json"
+
+
+def load_auth_state() -> dict:
+    """读登录头表 {bookSourceUrl: {"cookie": str, "header": dict}};损坏按空表。"""
+    try:
+        data = json.loads(auth_state_path().read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def save_auth_state(auth: dict) -> None:
+    p = auth_state_path()
+    tmp = p.with_name(p.name + ".tmp")
+    tmp.write_text(json.dumps(auth, ensure_ascii=False, indent=2), encoding="utf-8")
+    os.replace(tmp, p)
 
 
 VERIFY_ARTIFACT_SUFFIXES = (".good.json", ".error.json")   # 校验产物后缀 = 可再生缓存
@@ -183,6 +211,9 @@ class App:
         self.busy_dl = False
         self.busy_verify = False
         self._last_key = ""
+        # —— 每源登录头(用户凭据):读盘并注入引擎,校验/搜索/详情/目录/正文全链路生效 ——
+        self._auth = load_auth_state()
+        engine.set_auth(self._auth)
         # —— 运行记忆:先读盘,勾选/取消/选项都持久,重启原样恢复(见 _mem_*)——
         mem = self._mem_load()
         self.verify_origin = mem.get("verify_origin") or ""
@@ -314,6 +345,7 @@ class App:
         self.btn_sel_none = ttk.Button(selbar, text="清空选择", command=self.sel_none, width=9)
         self.btn_sel_none.pack(side="left")
         ttk.Button(selbar, text="清除缓存", command=self._cache_clear, width=9).pack(side="left", padx=4)
+        ttk.Button(selbar, text="登录头", command=self.open_auth_manager, width=7).pack(side="left", padx=4)
         self.lbl_sel = ttk.Label(selbar, text="已选 0 本", foreground="#0066cc")
         self.lbl_sel.pack(side="left", padx=12)
         self.lbl_sel_hint = ttk.Label(
@@ -656,7 +688,8 @@ class App:
             if self.stop_verify.is_set():
                 return None
             try:
-                r = requests.get(url, headers=VERIFY_UA, timeout=12,
+                hd = engine.source_headers(s)                    # 含用户登录头/Cookie
+                r = requests.get(url, headers=hd, timeout=12,
                                  verify=False, allow_redirects=True)
                 if r.status_code < 400:
                     return ("ok", r.status_code)
@@ -668,7 +701,7 @@ class App:
         return (reason, status)
 
     @staticmethod
-    def _write_error_table(origin, fn, srcs, results):
+    def _write_error_table(origin, fn, srcs, results, rescued=0):
         """写机器可读失效记录 <原名>.error.json,返回原因分布 dict。
 
         面向 agent/脚本解析:_meta.reason_summary 一眼拿到失效原因分布,
@@ -692,6 +725,7 @@ class App:
                            "source_file": fn, "total": len(srcs),
                            "ok": len(srcs) - len(fails) - n_untested,
                            "failed": len(fails), "untested": n_untested,
+                           "rescued_by_search": rescued,
                            "reason_summary": summary},
                  "failures": fails}
         out = origin.with_name(origin.stem + ".error.json")
@@ -774,6 +808,35 @@ class App:
                 self.q.put(("log", "文件 %s 校验中止(未检测 %d 个)" % (fn, n_untested)))
                 aborted = True
                 break
+            # 搜索兜底救援:403/超时类源用真实搜索规则复测,搜到书即改判有效。
+            n_rescued = 0
+            if not self.stop_verify.is_set():
+                cands = [s for s, r in zip(srcs, results)
+                         if r and r[0] in SEARCH_FALLBACK_REASONS]
+                if cands:
+                    self.q.put(("log", "搜索兜底: 对 %d 个 403/超时类源用真实搜索规则复测…"
+                                % len(cands)))
+                    rescued = set()
+
+                    def _on_hit(h, _rescued=rescued):
+                        _rescued.add(((h.get("source") or {}).get("bookSourceUrl")
+                                      or "").strip())
+
+                    try:
+                        engine.search_sources(cands, "我的", workers=VERIFY_WORKERS,
+                                              stop=self.stop_verify, on_hit=_on_hit)
+                    except Exception as e:
+                        self.q.put(("log", "搜索兜底异常: %s" % e))
+                    for i, (s, r) in enumerate(zip(srcs, results)):
+                        if (r and r[0] in SEARCH_FALLBACK_REASONS
+                                and (s.get("bookSourceUrl") or "").strip() in rescued):
+                            results[i] = ("ok", None)
+                            n_rescued += 1
+                    if n_rescued:
+                        n_ok = sum(1 for x in results if x and x[0] == "ok")
+                        n_bad = sum(1 for x in results if x and x[0] != "ok")
+                        self.q.put(("log", "搜索兜底救回 %d 个(文件 %s)"
+                                    % (n_rescued, fn)))
             if n_ok == 0:
                 # 断网保护:全部失效时清掉旧产物,避免 offline 全灭被缓存成"没有可用源"。
                 self._cleanup_verify_artifacts(fn, origin)
@@ -782,7 +845,8 @@ class App:
             # 机器可读的失效记录(含原因分布)落盘,供 agent/脚本读取分析;
             # 全失效分支上面刚清过旧产物,这里写的是本次的新记录。
             try:
-                summary = self._write_error_table(origin, fn, srcs, results)
+                summary = self._write_error_table(origin, fn, srcs, results,
+                                                  rescued=n_rescued)
                 if summary:
                     self.q.put(("log", "失效原因(%s): %s"
                                 % (fn, _fmt_reason_summary(summary))))
@@ -1193,6 +1257,142 @@ class App:
             "已清除 %d 个校验产物(释放 %.1f MB)、%d 条校验记录;\n"
             "选项已恢复默认,上次选中的书目已清空。\n书源勾选清单保留 %d 个文件。"
             % (removed, freed / 1048576.0, n_rec, len(self.checked_files)))
+
+    # --------------------------------------------------------- 登录头管理 -----
+    # 每源 Cookie/自定义 header(shuyuan/auth_state.json,用户凭据,清除缓存不清)。
+    # 保存即注入 engine:校验/搜索/详情/目录/正文全链路生效 —— 浏览器登录后把
+    # Cookie 粘进来,即可救活需登录/反爬拦截的书源。
+    def open_auth_manager(self):
+        win = tk.Toplevel(self.root)
+        win.title("登录头管理 · 每源 Cookie / 自定义 header")
+        win.geometry("880x620")
+        win.transient(self.root)
+
+        top = ttk.Frame(win)
+        top.pack(fill="x", padx=8, pady=(8, 4))
+        ttk.Label(top, text="过滤(名称/URL):").pack(side="left")
+        var_filter = tk.StringVar()
+        ttk.Entry(top, textvariable=var_filter).pack(side="left", padx=4,
+                                                     fill="x", expand=True)
+
+        mid = ttk.Frame(win)
+        mid.pack(fill="both", expand=True, padx=8)
+        tbl = ttk.Treeview(mid, columns=("name", "url"), show="headings", height=12)
+        tbl.heading("name", text="书源(● = 已配置登录头)")
+        tbl.heading("url", text="站点 URL")
+        tbl.column("name", width=280, anchor="w")
+        tbl.column("url", width=520, anchor="w")
+        sb = ttk.Scrollbar(mid, orient="vertical", command=tbl.yview)
+        tbl.configure(yscrollcommand=sb.set)
+        tbl.pack(side="left", fill="both", expand=True)
+        sb.pack(side="left", fill="y")
+
+        det = ttk.LabelFrame(win, text="选中源的登录头")
+        det.pack(fill="x", padx=8, pady=6)
+        lbl_cur = ttk.Label(det, text="(未选中)", foreground="#888")
+        lbl_cur.pack(anchor="w", padx=6, pady=(4, 0))
+        ttk.Label(det, text="Cookie(浏览器 F12 → 网络面板 → 请求头里整段复制):"
+                  ).pack(anchor="w", padx=6)
+        txt_ck = tk.Text(det, height=4, wrap="char")
+        txt_ck.pack(fill="x", padx=6, pady=(0, 4))
+        ttk.Label(det, text="自定义 header JSON(可空,如 {\"Referer\": \"https://xx.com/\"}):"
+                  ).pack(anchor="w", padx=6)
+        var_hd = tk.StringVar()
+        ttk.Entry(det, textvariable=var_hd).pack(fill="x", padx=6, pady=(0, 4))
+
+        btns = ttk.Frame(win)
+        btns.pack(fill="x", padx=8, pady=(0, 8))
+        cur_url = [""]
+
+        def refresh_list():
+            kw = var_filter.get().strip().lower()
+            tbl.delete(*tbl.get_children())
+            for s in self.sources:
+                nm = (s.get("bookSourceName") or "").strip()
+                u = (s.get("bookSourceUrl") or "").strip()
+                if kw and kw not in nm.lower() and kw not in u.lower():
+                    continue
+                mark = "● " if u in self._auth else ""
+                tbl.insert("", "end", values=(mark + nm, u))
+
+        def on_select(_e=None):
+            sel = tbl.selection()
+            if not sel:
+                return
+            name, u = tbl.item(sel[0], "values")
+            cur_url[0] = u
+            cfg = self._auth.get(u) or {}
+            txt_ck.delete("1.0", "end")
+            txt_ck.insert("1.0", cfg.get("cookie") or "")
+            hd = cfg.get("header")
+            var_hd.set(json.dumps(hd, ensure_ascii=False)
+                       if isinstance(hd, dict) and hd else "")
+            lbl_cur.config(text="%s · %s" % (name, u), foreground="#222")
+
+        def save_one():
+            u = cur_url[0]
+            if not u:
+                messagebox.showinfo("登录头", "先在上方列表选中一个书源。", parent=win)
+                return
+            cookie = txt_ck.get("1.0", "end").strip()
+            header = {}
+            raw = var_hd.get().strip()
+            if raw:
+                try:
+                    header = json.loads(raw)
+                except Exception:
+                    try:
+                        import ast
+                        header = ast.literal_eval(raw)   # 容错:{Referer: 'xx'} 单引号写法
+                    except Exception:
+                        header = None
+                if header is None or not isinstance(header, dict):
+                    messagebox.showerror(
+                        "登录头", "header 不是合法的 {\"键\": \"值\"} JSON,未保存。",
+                        parent=win)
+                    return
+            if cookie or header:
+                item = {}
+                if cookie:
+                    item["cookie"] = cookie
+                if header:
+                    item["header"] = header
+                self._auth[u] = item
+            else:
+                self._auth.pop(u, None)          # 两项都空 = 清除该源配置
+            save_auth_state(self._auth)
+            engine.set_auth(self._auth)
+            refresh_list()
+            self.log("登录头已保存: %s" % u)
+
+        def del_one():
+            u = cur_url[0]
+            if u and u in self._auth:
+                self._auth.pop(u, None)
+                save_auth_state(self._auth)
+                engine.set_auth(self._auth)
+                refresh_list()
+                on_select()
+                self.log("已删除登录头: %s" % u)
+
+        def clear_all():
+            if not self._auth:
+                return
+            if messagebox.askyesno("登录头", "确定清空全部 %d 个源的登录头?"
+                                   % len(self._auth), parent=win):
+                self._auth = {}
+                save_auth_state(self._auth)
+                engine.set_auth(self._auth)
+                refresh_list()
+                self.log("已清空全部登录头。")
+
+        ttk.Button(btns, text="保存当前源", command=save_one).pack(side="left")
+        ttk.Button(btns, text="删除当前源", command=del_one).pack(side="left", padx=4)
+        ttk.Button(btns, text="清空全部", command=clear_all).pack(side="left", padx=4)
+        ttk.Button(btns, text="关闭", command=win.destroy).pack(side="right")
+        tbl.bind("<<TreeviewSelect>>", on_select)
+        var_filter.trace_add("write", lambda *_: refresh_list())
+        refresh_list()
 
     def _try_restore_selection(self):
         """搜索结果就绪后,按记忆恢复选中(容错:已不存在的条目自动跳过)。"""
