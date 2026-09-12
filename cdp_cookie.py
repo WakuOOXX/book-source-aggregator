@@ -288,6 +288,45 @@ def page_activity(handle):
         return 0
 
 
+def open_tab(handle, url):
+    """新开一个标签页打开 url(不关闭其它标签 —— 并行抓取用)。返回 targetId。"""
+    url = normalize_url(url)
+    resp = _cdp_call(handle, 1, "Target.createTarget", {"url": url})
+    tid = (resp.get("result") or {}).get("targetId")
+    if not tid:
+        raise RuntimeError("打开新标签页失败。")
+    return tid
+
+
+def close_tab(handle, target_id):
+    """关闭指定标签页(忽略已关闭的情况)。"""
+    try:
+        _cdp_call(handle, 2, "Target.closeTarget", {"targetId": target_id},
+                  timeout=5)
+    except Exception:
+        pass
+
+
+def tab_url(handle, target_id):
+    """指定标签页当前 URL(未找到返回空串)—— 并行扫的提交判断。"""
+    try:
+        for t in _http_json(handle["port"], "/json/list"):
+            if t.get("id") == target_id:
+                return t.get("url") or ""
+    except Exception:
+        pass
+    return ""
+
+
+def all_cookies(handle):
+    """浏览器全部 Cookie(原始列表, 浏览器级一次调用)。"""
+    try:
+        resp = _cdp_call(handle, 3, "Storage.getCookies", {})
+        return (resp.get("result") or {}).get("cookies") or []
+    except Exception:
+        return []
+
+
 def navigate(handle, url):
     """在既有浏览器中新开标签页打开 url,并关闭其它页面标签(单标签模式)。
 
@@ -337,10 +376,15 @@ def fetch_cookies(handle, host):
 
 
 def close(handle):
-    """关掉本模块拉起的浏览器进程(用户自己关了也不报错)。"""
+    """优雅关闭抓取浏览器(CDP Browser.close 会把内存 Cookie 落盘),
+    失败再 terminate 兜底 —— 强杀会丢 Cookie, 重跑时 Phase 0 就没得秒过了。"""
     global _last_handle
     if handle is _last_handle:
         _last_handle = None
+    try:
+        _cdp_call(handle, 9, "Browser.close", {}, timeout=3)
+    except Exception:
+        pass
     try:
         handle["proc"].terminate()
     except Exception:
