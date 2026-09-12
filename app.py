@@ -81,6 +81,15 @@ def _fmt_reason_summary(summary: dict) -> str:
                       sorted(summary.items(), key=lambda kv: -kv[1]))
 
 
+def _url_host(url):
+    """取 URL 主机名(小写);解析失败返回空串。"""
+    try:
+        from urllib.parse import urlsplit
+        return (urlsplit(url).hostname or "").lower()
+    except Exception:
+        return ""
+
+
 def auth_state_path() -> Path:
     """每源登录头存储:shuyuan/auth_state.json。
 
@@ -1341,6 +1350,8 @@ class App:
                 if st["state"] == "launched":
                     auth_sess["phase"] = "launched"
                     batch["last_act"] = time.time()      # 新站就绪: 倒计时从此起算
+                    batch["launched_t"] = time.time()
+                    batch["url_ok"] = False              # 页面到达目标站后才允许抓
                     warn = st.get("warn") or ""
                     if batch["active"]:
                         btn_fetch.config(text="抓取本站(%d/%d)"
@@ -1404,7 +1415,7 @@ class App:
                         auth_sess["phase"] = "idle"
                         btn_fetch.config(text="浏览器登录抓取", state="normal")
                         _stat(msg, "#cc0000")
-            _auto_tick()
+            _auto_tick_checked()
             poll_job[0] = win.after(150, poll_fetch)
 
         def on_fetch():
@@ -1472,7 +1483,8 @@ class App:
         # 用户在页面里点击/输入会重置倒计时(给登录留时间),全程零点击。 ——
         batch = {"active": False, "auto": False, "paused": False,
                  "hosts": [], "targets": {}, "idx": -1, "idle": AUTO_IDLE_SECS,
-                 "last_act": 0.0, "last_url": "", "tick_t": 0.0, "stat_t": 0.0}
+                 "last_act": 0.0, "last_url": "", "tick_t": 0.0, "stat_t": 0.0,
+                 "launched_t": 0.0, "url_ok": False}
 
         def batch_finish(msg, color="#0066cc"):
             batch["active"] = False
@@ -1544,26 +1556,37 @@ class App:
                     return
                 urls = {tbl.item(i, "values")[1] for i in tbl.get_children()}
             from urllib.parse import urlsplit
-            targets = {}
+            targets_all = {}
             for u in urls:
                 u = u.strip()
                 if "://" not in u:
                     u = "http://" + u
                 h = (urlsplit(u).hostname or "").lower()
                 if h:
-                    targets.setdefault(h, set()).add(u)
-            n_all = len(targets)
+                    targets_all.setdefault(h, set()).add(u)
+            n_all = len(targets_all)
+            targets = targets_all
+            skipped = 0
             if var_skip_cfg.get():      # 跳过已配 Cookie 的站点(重跑批量秒级)
-                targets = {h: us for h, us in targets.items()
+                targets = {h: us for h, us in targets_all.items()
                            if not any((self._auth.get(u) or {}).get("cookie")
                                       for u in us)}
-            skipped = n_all - len(targets)
+                skipped = n_all - len(targets)
+                if not targets and n_all:
+                    # 全被过滤不能是死路: 给"全部重抓"的机会, 保住自动化体验
+                    if messagebox.askyesno(
+                            "批量抓取",
+                            "选中的 %d 个站点全都配过 Cookie。\n"
+                            "要忽略跳过、全部重抓一遍吗?" % n_all, parent=win):
+                        targets = targets_all
+                        skipped = 0
+                    else:
+                        return
             batch["hosts"] = sorted(targets)
             batch["targets"] = targets
             batch["idx"] = -1
             if not batch["hosts"]:
-                messagebox.showinfo("批量抓取", "没有需要处理的站点"
-                                    "(选中的源都已配置过 Cookie)。", parent=win)
+                messagebox.showinfo("批量抓取", "选中的源没有有效网址。", parent=win)
                 return
             skip_note = "(已跳过 %d 个配过 Cookie 的站点)" % skipped if skipped else ""
             if auto:
@@ -1625,6 +1648,17 @@ class App:
 
             threading.Thread(target=_grab, daemon=True).start()
 
+        def _auto_tick_checked():
+            """兜底包装:_auto_tick 任何异常都不能杀死 poll 循环 —— 否则
+            pending 无人处理, 整个抓取流程界面假死, 用户看到的就是"自动化没了"。"""
+            try:
+                _auto_tick()
+            except Exception as e:
+                try:
+                    _stat("自动模式异常(已忽略): %s" % e, "#cc0000")
+                except Exception:
+                    pass
+
         def _auto_tick():
             """自动模式:页面无操作满 AUTO_IDLE_SECS 秒 → 抓取本站并跳下一站。"""
             if not (batch["active"] and batch["auto"] and not batch["paused"]):
@@ -1641,11 +1675,25 @@ class App:
             if url and url != batch["last_url"]:
                 batch["last_url"] = url
                 batch["last_act"] = now              # 页面跳转(含登录提交)= 活动
-            act_ms = cdp_cookie.page_activity(handle)
+            if not batch.get("url_ok"):
+                host = batch["hosts"][batch["idx"]]
+                for p in pages:
+                    ph = _url_host(p)
+                    if ph and (ph == host or ph.endswith("." + host)
+                               or host.endswith("." + ph)):
+                        batch["url_ok"] = True
+                        break
+            try:                                     # 活动检测失败不阻断推进
+                act_ms = cdp_cookie.page_activity(handle)
+            except Exception:
+                act_ms = 0
             if act_ms and act_ms / 1000.0 > batch["last_act"]:
                 batch["last_act"] = act_ms / 1000.0  # 页面内点击/输入 = 活动
             left = batch["idle"] - (now - batch["last_act"])
-            if left <= 0:
+            # 页面必须真的到达目标主机才抓(导航提交后 Set-Cookie 才落地);
+            # 死站/打不开的站等硬时限(max(10s, 3×静默))后放行跳过
+            hard = now - batch.get("launched_t", now) >= max(10.0, batch["idle"] * 3)
+            if left <= 0 and (batch.get("url_ok") or hard):
                 batch_grab()                         # 与手动抓取同一保存/跳转路径
             elif now - batch["stat_t"] >= 1.0:
                 batch["stat_t"] = now
