@@ -78,7 +78,7 @@ exe 免 Python 环境，已在 Windows 11 实测。**发布包不含书源**（�
 ```bash
 git clone https://github.com/WakuOOXX/novel-downloader.git
 cd novel-downloader
-pip install requests beautifulsoup4 lxml
+pip install requests beautifulsoup4 lxml websocket-client
 python app.py        # 用 pythonw app.py 启动可免控制台窗口
 ```
 
@@ -162,7 +162,7 @@ python app.py        # 用 pythonw app.py 启动可免控制台窗口
 `--onefile` 打包的 exe 首次启动要解压到临时目录，慢一两秒正常。确认杀毒软件没有拦截。
 
 **源码启动报 `ModuleNotFoundError: tkinter`？**
-换官方安装的 Python（默认带 tkinter），再 `pip install requests beautifulsoup4 lxml`。
+换官方安装的 Python（默认带 tkinter），再 `pip install requests beautifulsoup4 lxml websocket-client`。
 
 更多排查项见[技术文档 §11](docs/技术文档.md)。
 

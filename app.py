@@ -14,6 +14,8 @@ from pathlib import Path
 
 import requests
 
+import cdp_cookie
+
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from legado import engine, export
 from legado.fetcher import DEFAULT_UA
@@ -1291,8 +1293,14 @@ class App:
         det.pack(fill="x", padx=8, pady=6)
         lbl_cur = ttk.Label(det, text="(未选中)", foreground="#888")
         lbl_cur.pack(anchor="w", padx=6, pady=(4, 0))
-        ttk.Label(det, text="Cookie(浏览器 F12 → 网络面板 → 请求头里整段复制):"
-                  ).pack(anchor="w", padx=6)
+        row_ck = ttk.Frame(det)
+        row_ck.pack(fill="x", padx=6)
+        ttk.Label(row_ck, text="Cookie:").pack(side="left")
+        btn_fetch = ttk.Button(row_ck, text="浏览器登录抓取",
+                               command=lambda: None, width=14)
+        btn_fetch.pack(side="right")
+        lbl_stat = ttk.Label(det, text="", foreground="#888")
+        lbl_stat.pack(anchor="w", padx=6)
         txt_ck = tk.Text(det, height=4, wrap="char")
         txt_ck.pack(fill="x", padx=6, pady=(0, 4))
         ttk.Label(det, text="自定义 header JSON(可空,如 {\"Referer\": \"https://xx.com/\"}):"
@@ -1303,6 +1311,89 @@ class App:
         btns = ttk.Frame(win)
         btns.pack(fill="x", padx=8, pady=(0, 8))
         cur_url = [""]
+
+        # —— 浏览器登录抓取(cdp_cookie):弹默认浏览器 → 登录 → CDP 抓 Cookie ——
+        auth_sess = {"handle": None, "phase": "idle", "pending": None}
+        poll_job = [None]
+
+        def _stat(msg, color="#888"):
+            lbl_stat.config(text=msg, foreground=color)
+
+        def poll_fetch():
+            """工作线程只写 auth_sess["pending"],UI 侧轮询取结果(ttk 非线程安全)。"""
+            st = auth_sess["pending"]
+            if st:
+                auth_sess["pending"] = None
+                if st["state"] == "launched":
+                    auth_sess["phase"] = "launched"
+                    btn_fetch.config(text="我登录好了 → 抓取", state="normal")
+                    _stat("浏览器已启动,请在浏览器里登录;完成后点本按钮抓取 Cookie。")
+                elif st["state"] == "captured":
+                    cdp_cookie.close(auth_sess["handle"])
+                    auth_sess["handle"] = None
+                    auth_sess["phase"] = "idle"
+                    txt_ck.delete("1.0", "end")
+                    txt_ck.insert("1.0", st["cookie"])
+                    btn_fetch.config(text="浏览器登录抓取", state="normal")
+                    _stat("已抓取 %d 条 Cookie 并填入,记得点「保存当前源」。" %
+                          len([p for p in st["cookie"].split("; ") if p]),
+                          "#0066cc")
+                else:
+                    if auth_sess["handle"]:
+                        cdp_cookie.close(auth_sess["handle"])
+                    auth_sess["handle"] = None
+                    auth_sess["phase"] = "idle"
+                    btn_fetch.config(text="浏览器登录抓取", state="normal")
+                    _stat(st["msg"], "#cc0000")
+            poll_job[0] = win.after(150, poll_fetch)
+
+        def on_fetch():
+            if auth_sess["phase"] in ("launching", "capturing"):
+                return
+            if not cur_url[0]:
+                messagebox.showinfo("登录头", "先在上方列表选中一个书源。", parent=win)
+                return
+            if auth_sess["phase"] == "idle":
+                auth_sess["phase"] = "launching"
+                btn_fetch.config(state="disabled")
+                _stat("正在启动浏览器…")
+
+                def _launch(url=cur_url[0]):
+                    try:
+                        auth_sess["handle"] = cdp_cookie.launch_for_auth(
+                            url, APP_DIR / "auth_profile")
+                        auth_sess["pending"] = {"state": "launched"}
+                    except Exception as e:
+                        auth_sess["pending"] = {"state": "error", "msg": str(e)}
+
+                threading.Thread(target=_launch, daemon=True).start()
+            else:                                     # launched → 抓取
+                auth_sess["phase"] = "capturing"
+                btn_fetch.config(state="disabled")
+                _stat("正在从浏览器抓取 Cookie…")
+                from urllib.parse import urlsplit
+                host = urlsplit(cur_url[0]).hostname or ""
+                handle = auth_sess["handle"]
+
+                def _grab():
+                    try:
+                        auth_sess["pending"] = {
+                            "state": "captured",
+                            "cookie": cdp_cookie.fetch_cookies(handle, host)}
+                    except Exception as e:
+                        auth_sess["pending"] = {"state": "error",
+                                                "msg": "抓取失败: %s" % e}
+
+                threading.Thread(target=_grab, daemon=True).start()
+
+        btn_fetch.config(command=on_fetch)
+
+        def close_win():
+            if poll_job[0]:
+                win.after_cancel(poll_job[0])
+            if auth_sess["handle"]:
+                cdp_cookie.close(auth_sess["handle"])
+            win.destroy()
 
         def refresh_list():
             kw = var_filter.get().strip().lower()
@@ -1389,10 +1480,12 @@ class App:
         ttk.Button(btns, text="保存当前源", command=save_one).pack(side="left")
         ttk.Button(btns, text="删除当前源", command=del_one).pack(side="left", padx=4)
         ttk.Button(btns, text="清空全部", command=clear_all).pack(side="left", padx=4)
-        ttk.Button(btns, text="关闭", command=win.destroy).pack(side="right")
+        ttk.Button(btns, text="关闭", command=close_win).pack(side="right")
         tbl.bind("<<TreeviewSelect>>", on_select)
         var_filter.trace_add("write", lambda *_: refresh_list())
+        win.protocol("WM_DELETE_WINDOW", close_win)
         refresh_list()
+        poll_fetch()
 
     def _try_restore_selection(self):
         """搜索结果就绪后,按记忆恢复选中(容错:已不存在的条目自动跳过)。"""

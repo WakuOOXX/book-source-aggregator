@@ -13,6 +13,7 @@ sel_state.json
 smoke_result.txt
 shuyuan/
 *.good.json
+auth_profile/
 .zcode/
 
 # IDE / OS / 私人本地文件(不入库)
