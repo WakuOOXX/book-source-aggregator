@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """小说下载器 —— 桌面 GUI(输入书名 → 选书 → 导出 TXT/EPUB)。"""
 import json
+import re
 import os
 import queue
 import subprocess
@@ -57,8 +58,8 @@ SEARCH_FALLBACK_REASONS = {"timeout", "http_403", "http_429", "http_503"}
 # 用户在页面里点击/输入(CDP 注入监听)会重置倒计时,给登录留时间。
 AUTO_IDLE_SECS = 5
 AUTO_IDLE_FAST = 1.5    # 已配过 Cookie 的站刷新会话用快档
-AUTO_PARA_TABS = 5      # 自动批并行扫的标签数(不需要登录的站并行开)
-AUTO_PARA_SETTLE = 2.5  # 并行扫: 页面提交后再等的秒数(Set-Cookie 落地)
+AUTO_PARA_TABS = 10     # 自动批并行扫的标签数(不需要登录的站并行开)
+AUTO_PARA_SETTLE = 8.0  # 并行扫: 页面提交后再等的秒数(Set-Cookie 落地)
 # 正文下载是另一回事:同一本书的章节全来自同一个站,并发越高越容易触发限流/封禁,
 # 所以刻意压低,不要跟着搜索一起调大。
 DOWNLOAD_WORKERS = 10
@@ -81,6 +82,29 @@ def _fmt_reason_summary(summary: dict) -> str:
     zh = {"connect": "连不上", "timeout": "超时", "invalid_url": "无URL"}
     return " · ".join("%s %d" % (zh.get(k, k), v) for k, v in
                       sorted(summary.items(), key=lambda kv: -kv[1]))
+
+
+def _pick_login_url(source):
+    """选择"浏览器登录抓取"的打开目标:优先源 loginUrl(纯网址),回退站点 URL。
+
+    返回 (open_url, grab_host):open_url 是要在浏览器里打开并登录的页面,
+    grab_host 是 Cookie 抓取过滤用的主机名 —— 永远取 bookSourceUrl 的主机,
+    这样登录页(passport 等子域)设置的域级 Cookie 也能被匹配进来。
+    返回 (None, None) 表示该源没有可用网址。
+    """
+    if not source:
+        return None, None
+    base = (source.get("bookSourceUrl") or "").strip()
+    if "://" not in base:
+        base = "https://" + base
+    grab_host = _url_host(base)
+    if not grab_host:
+        return None, None
+    lu = (source.get("loginUrl") or "").strip()
+    if lu.startswith(("http://", "https://")) and not re.search(
+            r"<js>|@js:", lu, re.I):
+        return lu, grab_host
+    return base, grab_host
 
 
 def _url_host(url):
@@ -709,16 +733,18 @@ class App:
     # 判定:并发 GET bookSourceUrl,status < 400 即有效(202/301 等也算活;
     # 失败重试一次再定生死。旧版"200 独裁 + 5s 超时 + 老 UA"曾把约六成活源误判失效。
     def _check_one(self, s):
-        """探测单源,返回 (reason, status)。
+        """探测单源,返回 (reason, status, elapsed_ms)。
 
         reason ∈ ok / timeout / connect(连不上、DNS 死)/ http_<code> / invalid_url;
-        status 为最后一次 HTTP 状态码(非 HTTP 失败为 None);中止返回 None。
+        status 为最后一次 HTTP 状态码(非 HTTP 失败为 None);elapsed_ms 含重试的
+        总耗时(回写 respondTime 供搜索排序);中止返回 None。
         """
         if self.stop_verify.is_set():
             return None                                          # None = 中止未检测
         url = (s.get("bookSourceUrl") or "").strip()
         if not url:
-            return ("invalid_url", None)
+            return ("invalid_url", None, 0)
+        t0 = time.time()
         reason, status = ("connect", None)
         for _attempt in (0, 1):                                  # 失败重试一次
             if self.stop_verify.is_set():
@@ -728,13 +754,13 @@ class App:
                 r = fetcher.request("GET", url, headers=hd, timeout=12,
                                     verify=False, allow_redirects=True)
                 if r.status_code < 400:
-                    return ("ok", r.status_code)
+                    return ("ok", r.status_code, int((time.time() - t0) * 1000))
                 reason, status = ("http_%d" % r.status_code, r.status_code)
             except fetcher.TIMEOUT_EXCS:
                 reason, status = ("timeout", None)
             except Exception:
                 reason, status = ("connect", None)
-        return (reason, status)
+        return (reason, status, int((time.time() - t0) * 1000))
 
     @staticmethod
     def _write_error_table(origin, fn, srcs, results, rescued=0):
@@ -752,11 +778,12 @@ class App:
                 continue
             if r[0] == "ok":
                 continue
-            reason, status = r
+            reason, status = r[0], r[1]
             summary[reason] = summary.get(reason, 0) + 1
             fails.append({"source_name": (s.get("bookSourceName") or "").strip(),
                           "url": (s.get("bookSourceUrl") or "").strip(),
-                          "reason": reason, "status": status})
+                          "reason": reason, "status": status,
+                          "elapsed_ms": r[2] if len(r) > 2 else None})
         table = {"_meta": {"generated_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
                            "source_file": fn, "total": len(srcs),
                            "ok": len(srcs) - len(fails) - n_untested,
@@ -896,7 +923,10 @@ class App:
                     u = (s.get("bookSourceUrl") or "").strip()
                     if u not in seen:
                         seen.add(u)
-                        good.append(s)
+                        g = dict(s)
+                        if len(r) > 2 and r[2]:              # 响应耗时回写(Legado 同名字段)
+                            g["respondTime"] = r[2]
+                        good.append(g)
             try:
                 tmp = table.with_name(table.name + ".tmp")
                 tmp.write_text(json.dumps(good, ensure_ascii=False, indent=2),
@@ -1092,9 +1122,16 @@ class App:
                 groups[k] = []
                 order.append(k)
             groups[k].append(h)
+        def _rt(x):
+            """源响应耗时(ms, 校验时写入 respondTime);缺省视为最慢。"""
+            try:
+                return int((x.get("source") or {}).get("respondTime") or 10 ** 9)
+            except Exception:
+                return 10 ** 9
+
         for g in groups.values():
-            g.sort(key=lambda x: (self._completeness(x), self._score_hit(x)),
-                   reverse=True)
+            g.sort(key=lambda x: (self._completeness(x), self._score_hit(x),
+                                  -_rt(x)), reverse=True)
         order.sort(key=lambda k: max(self._score_hit(x) for x in groups[k]),
                    reverse=True)
         return [x for k in order for x in groups[k]]
@@ -1464,23 +1501,30 @@ class App:
         def on_fetch():
             if auth_sess["phase"] in ("launching", "capturing"):
                 return
-            # 抓取与选源解耦:选中源 → 默认抓该源站点;没选中 → 手动输入网址
-            url = cur_url[0]
-            if not url:
-                url = simpledialog.askstring(
+            # 打开目标优先选源的登录页(纯网址 loginUrl)—— 登录页常在 passport
+            # 等子域;Cookie 抓取过滤仍按站点主机, 域级 Cookie 能匹配进来
+            src = next((s for s in self.sources
+                        if (s.get("bookSourceUrl") or "").strip() == cur_url[0]),
+                       None) if cur_url[0] else None
+            open_url, grab_host = _pick_login_url(src)
+            if not open_url:
+                open_url = cur_url[0] or None
+            if not open_url:
+                open_url = simpledialog.askstring(
                     "浏览器登录抓取",
                     "要打开并登录的网址(抓取它的 Cookie):",
                     initialvalue="https://", parent=win)
-                if not url or not url.strip():
+                if not open_url or not open_url.strip():
                     return
-                url = url.strip()
+                open_url = open_url.strip()
             if auth_sess["phase"] == "idle":
                 auth_sess["phase"] = "launching"
-                auth_sess["url"] = url
+                auth_sess["url"] = open_url
+                auth_sess["grab_host"] = grab_host or _url_host(open_url)
                 btn_fetch.config(state="disabled")
                 _stat("正在启动浏览器…")
 
-                def _launch(url=url):
+                def _launch(url=open_url):
                     try:
                         h = cdp_cookie.launch_for_auth(
                             url, APP_DIR / "auth_profile")
@@ -1496,8 +1540,7 @@ class App:
                 auth_sess["phase"] = "capturing"
                 btn_fetch.config(state="disabled")
                 _stat("正在从浏览器抓取 Cookie…")
-                from urllib.parse import urlsplit
-                host = urlsplit(auth_sess.get("url") or "").hostname or ""
+                host = auth_sess.get("grab_host") or _url_host(open_url)
                 handle = auth_sess["handle"]
 
                 def _grab():
@@ -1554,7 +1597,7 @@ class App:
             本来就观察页面 URL,打不开的站静默期满自然跳过;手动模式保留核验警告。
             """
             host = batch["hosts"][batch["idx"]]
-            url = sorted(batch["targets"][host])[0]
+            url = batch.get("login_map", {}).get(host)                 or sorted(batch["targets"][host])[0]   # 有登录页先开登录页
 
             def _open():
                 try:
@@ -1627,8 +1670,16 @@ class App:
                         skipped = 0
                     else:
                         return
+            login_map = {}
+            for s in self.sources:
+                b = (s.get("bookSourceUrl") or "").strip()
+                h = _url_host(b if "://" in b else "https://" + b)
+                lu = (s.get("loginUrl") or "").strip()
+                if h and h not in login_map and lu.startswith(("http://", "https://"))                         and not re.search(r"<js>|@js:", lu, re.I):
+                    login_map[h] = lu
             batch["hosts"] = sorted(targets)
             batch["targets"] = targets
+            batch["login_map"] = login_map
             batch["idx"] = -1
             if not batch["hosts"]:
                 messagebox.showinfo("批量抓取", "选中的源没有有效网址。", parent=win)
