@@ -9,7 +9,7 @@ import threading
 import time
 import tkinter as tk
 from concurrent.futures import ThreadPoolExecutor
-from tkinter import ttk, filedialog, messagebox
+from tkinter import ttk, filedialog, messagebox, simpledialog
 from pathlib import Path
 
 import requests
@@ -1299,9 +1299,10 @@ class App:
         tbl.pack(side="left", fill="both", expand=True)
         sb.pack(side="left", fill="y")
 
-        det = ttk.LabelFrame(win, text="选中源的登录头")
+        det = ttk.LabelFrame(win, text="登录头(先选中源,再填/抓)")
         det.pack(fill="x", padx=8, pady=6)
-        lbl_cur = ttk.Label(det, text="(未选中)", foreground="#888")
+        lbl_cur = ttk.Label(det, foreground="#888")
+        lbl_cur.config(text="未选中 · 在上方点选书源(支持 Ctrl/Shift/拖动框选多选)")
         lbl_cur.pack(anchor="w", padx=6, pady=(4, 0))
         row_ck = ttk.Frame(det)
         row_ck.pack(fill="x", padx=6)
@@ -1345,7 +1346,7 @@ class App:
                     txt_ck.delete("1.0", "end")
                     txt_ck.insert("1.0", st["cookie"])
                     btn_fetch.config(text="浏览器登录抓取", state="normal")
-                    _stat("已抓取 %d 条 Cookie 并填入,记得点「保存到所选」。" %
+                    _stat("已抓取 %d 条 Cookie 并填入 → 上方选中目标源(可多选)→ 点「保存到所选」" %
                           len([p for p in st["cookie"].split("; ") if p]),
                           "#0066cc")
                 else:
@@ -1360,15 +1361,23 @@ class App:
         def on_fetch():
             if auth_sess["phase"] in ("launching", "capturing"):
                 return
-            if not cur_url[0]:
-                messagebox.showinfo("登录头", "先在上方列表选中一个书源。", parent=win)
-                return
+            # 抓取与选源解耦:选中源 → 默认抓该源站点;没选中 → 手动输入网址
+            url = cur_url[0]
+            if not url:
+                url = simpledialog.askstring(
+                    "浏览器登录抓取",
+                    "要打开并登录的网址(抓取它的 Cookie):",
+                    initialvalue="https://", parent=win)
+                if not url or not url.strip():
+                    return
+                url = url.strip()
             if auth_sess["phase"] == "idle":
                 auth_sess["phase"] = "launching"
+                auth_sess["url"] = url
                 btn_fetch.config(state="disabled")
                 _stat("正在启动浏览器…")
 
-                def _launch(url=cur_url[0]):
+                def _launch(url=url):
                     try:
                         auth_sess["handle"] = cdp_cookie.launch_for_auth(
                             url, APP_DIR / "auth_profile")
@@ -1382,7 +1391,7 @@ class App:
                 btn_fetch.config(state="disabled")
                 _stat("正在从浏览器抓取 Cookie…")
                 from urllib.parse import urlsplit
-                host = urlsplit(cur_url[0]).hostname or ""
+                host = urlsplit(auth_sess.get("url") or "").hostname or ""
                 handle = auth_sess["handle"]
 
                 def _grab():
@@ -1443,7 +1452,8 @@ class App:
                                % len(sel), foreground="#0066cc")
             else:
                 cur_url[0] = ""
-                lbl_cur.config(text="(未选中)", foreground="#888")
+                lbl_cur.config(text="未选中 · 在上方点选书源(可批量)",
+                               foreground="#888")
 
         def _parse_header(raw):
             """header 输入解析:JSON 优先,失败回退 ast(容错单引号/无引号写法)。"""
@@ -1463,7 +1473,10 @@ class App:
         def save_sel():
             sel = sorted(self._auth_kit.get())
             if not sel:
-                messagebox.showinfo("登录头", "先在上方列表选中至少一个书源。", parent=win)
+                messagebox.showinfo(
+                    "登录头",
+                    "先在上方列表选中源(可框选/Ctrl 多选),再点「保存到所选」。",
+                    parent=win)
                 return
             cookie = txt_ck.get("1.0", "end").strip()
             header = {}
