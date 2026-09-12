@@ -56,6 +56,7 @@ SEARCH_FALLBACK_REASONS = {"timeout", "http_403", "http_429", "http_503"}
 # 批量自动抓取:站点内无鼠标/键盘操作满该秒数 → 自动抓取并跳下一站;
 # 用户在页面里点击/输入(CDP 注入监听)会重置倒计时,给登录留时间。
 AUTO_IDLE_SECS = 5
+AUTO_IDLE_FAST = 1.5    # 已配过 Cookie 的站刷新会话用快档
 # 正文下载是另一回事:同一本书的章节全来自同一个站,并发越高越容易触发限流/封禁,
 # 所以刻意压低,不要跟着搜索一起调大。
 DOWNLOAD_WORKERS = 10
@@ -1470,7 +1471,7 @@ class App:
         # 自动模式(v1.6.4):页面内无操作满 AUTO_IDLE_SECS 秒自动抓取跳站,
         # 用户在页面里点击/输入会重置倒计时(给登录留时间),全程零点击。 ——
         batch = {"active": False, "auto": False, "paused": False,
-                 "hosts": [], "targets": {}, "idx": -1,
+                 "hosts": [], "targets": {}, "idx": -1, "idle": AUTO_IDLE_SECS,
                  "last_act": 0.0, "last_url": "", "tick_t": 0.0, "stat_t": 0.0}
 
         def batch_finish(msg, color="#0066cc"):
@@ -1490,7 +1491,11 @@ class App:
             self.log(msg)
 
         def _open_current():
-            """(重新)打开 batch 当前站点的页面,工作线程执行;浏览器死了会自动重开。"""
+            """(重新)打开 batch 当前站点的页面,工作线程执行;浏览器死了会自动重开。
+
+            自动模式不做 page_mismatch 阻塞核验(最多等 8s)—— 倒计时 tick
+            本来就观察页面 URL,打不开的站静默期满自然跳过;手动模式保留核验警告。
+            """
             host = batch["hosts"][batch["idx"]]
             url = sorted(batch["targets"][host])[0]
 
@@ -1504,9 +1509,9 @@ class App:
                             url, APP_DIR / "auth_profile")
                     else:
                         cdp_cookie.navigate(auth_sess["handle"], url)
-                    auth_sess["pending"] = {
-                        "state": "launched",
-                        "warn": cdp_cookie.page_mismatch(auth_sess["handle"], url)}
+                    warn = "" if batch.get("auto") else \
+                        cdp_cookie.page_mismatch(auth_sess["handle"], url)
+                    auth_sess["pending"] = {"state": "launched", "warn": warn}
                 except Exception as e:
                     auth_sess["pending"] = {"state": "error",
                                             "msg": "打开 %s 失败: %s" % (host, e)}
@@ -1520,9 +1525,13 @@ class App:
                              % len(batch["hosts"]))
                 return
             host = batch["hosts"][batch["idx"]]
+            # 分级静默: 该站已配过 Cookie → 快档(刷新会话), 全新站 → 慢档(留登录时间)
+            urls_here = batch["targets"][host]
+            configured = any((self._auth.get(u) or {}).get("cookie") for u in urls_here)
+            batch["idle"] = AUTO_IDLE_FAST if configured else AUTO_IDLE_SECS
             btn_fetch.config(state="disabled")
-            _stat("批量 %d/%d: 正在打开 %s …"
-                  % (batch["idx"] + 1, len(batch["hosts"]), host))
+            _stat("批量 %d/%d: 正在打开 %s …(静默 %ss)"
+                  % (batch["idx"] + 1, len(batch["hosts"]), host, batch["idle"]))
             _open_current()
 
         def batch_start(auto=False):
@@ -1543,21 +1552,30 @@ class App:
                 h = (urlsplit(u).hostname or "").lower()
                 if h:
                     targets.setdefault(h, set()).add(u)
+            n_all = len(targets)
+            if var_skip_cfg.get():      # 跳过已配 Cookie 的站点(重跑批量秒级)
+                targets = {h: us for h, us in targets.items()
+                           if not any((self._auth.get(u) or {}).get("cookie")
+                                      for u in us)}
+            skipped = n_all - len(targets)
             batch["hosts"] = sorted(targets)
             batch["targets"] = targets
             batch["idx"] = -1
             if not batch["hosts"]:
-                messagebox.showinfo("批量抓取", "选中的源没有有效网址。", parent=win)
+                messagebox.showinfo("批量抓取", "没有需要处理的站点"
+                                    "(选中的源都已配置过 Cookie)。", parent=win)
                 return
+            skip_note = "(已跳过 %d 个配过 Cookie 的站点)" % skipped if skipped else ""
             if auto:
-                tip = ("全自动模式:依次访问 %d 个站点,页面内无操作 %d 秒即自动"
+                tip = ("全自动模式:依次访问 %d 个站点%s,页面内无操作 %d 秒即自动"
                        "抓取 Cookie 并跳下一站;要登录的站,在页面里点击/输入"
                        "就会重置倒计时。确定开始?" % (len(batch["hosts"]),
+                                                    skip_note,
                                                     AUTO_IDLE_SECS))
             else:
-                tip = ("将依次访问 %d 个不同站点:每站登录后点「抓取本站」, "
+                tip = ("将依次访问 %d 个不同站点%s:每站登录后点「抓取本站」, "
                        "Cookie 自动保存并跳下一站(已登录的站点无需重复登录)。"
-                       "确定开始?" % len(batch["hosts"]))
+                       "确定开始?" % (len(batch["hosts"]), skip_note))
             if not messagebox.askyesno("批量抓取", tip, parent=win):
                 return
             batch["active"] = True
@@ -1614,7 +1632,7 @@ class App:
             if auth_sess["phase"] != "launched":
                 return
             now = time.time()
-            if now - batch["tick_t"] < 0.7:          # 节流 ~1.4Hz
+            if now - batch["tick_t"] < 0.5:          # 节流 2Hz
                 return
             batch["tick_t"] = now
             handle = auth_sess["handle"]
@@ -1626,15 +1644,16 @@ class App:
             act_ms = cdp_cookie.page_activity(handle)
             if act_ms and act_ms / 1000.0 > batch["last_act"]:
                 batch["last_act"] = act_ms / 1000.0  # 页面内点击/输入 = 活动
-            left = AUTO_IDLE_SECS - (now - batch["last_act"])
+            left = batch["idle"] - (now - batch["last_act"])
             if left <= 0:
                 batch_grab()                         # 与手动抓取同一保存/跳转路径
             elif now - batch["stat_t"] >= 1.0:
                 batch["stat_t"] = now
-                _stat("自动 %d/%d: %s —— %ds 后无操作自动跳下一站"
-                      " (在页面里点击/输入会重置倒计时)"
+                _stat("自动 %d/%d: %s —— %ds 后无操作自动跳下一站(%ss 档,"
+                      "在页面里点击/输入会重置倒计时)"
                       % (batch["idx"] + 1, len(batch["hosts"]),
-                         batch["hosts"][batch["idx"]], int(left) + 1))
+                         batch["hosts"][batch["idx"]], int(left) + 1,
+                         batch["idle"]))
 
         def batch_skip():
             batch_next()
@@ -1769,6 +1788,9 @@ class App:
         btn_bstart = ttk.Button(btns, text="批量抓取",
                                 command=lambda: batch_start(False))
         btn_bstart.pack(side="left", padx=4)
+        var_skip_cfg = tk.BooleanVar(value=True)     # 重跑批量跳过已配站点
+        ttk.Checkbutton(btns, text="跳过已配站",
+                        variable=var_skip_cfg).pack(side="left", padx=(2, 0))
         btn_bauto = ttk.Button(btns, text="自动抓取",
                                command=lambda: batch_start(True))
         btn_bauto.pack(side="left")
