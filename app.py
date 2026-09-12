@@ -15,6 +15,7 @@ from pathlib import Path
 import requests
 
 import cdp_cookie
+from selkit import TreeMultiSelect
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from legado import engine, export
@@ -269,6 +270,8 @@ class App:
         ttk.Button(top, text="打开目录", command=self._open_src_dir).pack(side="left")
         self.btn_verify = ttk.Button(top, text="✔ 校验书源", command=self.start_verify)
         self.btn_verify.pack(side="left")
+        ttk.Button(top, text="登录头", command=self.open_auth_manager,
+                   width=7).pack(side="left", padx=(6, 0))
         self.lbl_verify = ttk.Label(top, text="", foreground="#555")
         self.lbl_verify.pack(side="left", padx=(6, 0))
 
@@ -347,7 +350,6 @@ class App:
         self.btn_sel_none = ttk.Button(selbar, text="清空选择", command=self.sel_none, width=9)
         self.btn_sel_none.pack(side="left")
         ttk.Button(selbar, text="清除缓存", command=self._cache_clear, width=9).pack(side="left", padx=4)
-        ttk.Button(selbar, text="登录头", command=self.open_auth_manager, width=7).pack(side="left", padx=4)
         self.lbl_sel = ttk.Label(selbar, text="已选 0 本", foreground="#0066cc")
         self.lbl_sel.pack(side="left", padx=12)
         self.lbl_sel_hint = ttk.Label(
@@ -1276,6 +1278,14 @@ class App:
         var_filter = tk.StringVar()
         ttk.Entry(top, textvariable=var_filter).pack(side="left", padx=4,
                                                      fill="x", expand=True)
+        # 选择交互与主窗口搜索结果表一致(selkit.TreeMultiSelect):
+        # 单击=单选 · Ctrl=增减 · Shift=连续 · 拖动=框选 · Esc 取消;全选供批量操作
+        ttk.Button(top, text="全选", width=6,
+                   command=lambda: self._auth_kit.select_all()).pack(side="left")
+        ttk.Button(top, text="清空", width=6,
+                   command=lambda: self._auth_kit.clear_selection()).pack(side="left", padx=4)
+        lbl_cnt = ttk.Label(top, text="已选 0", foreground="#0066cc")
+        lbl_cnt.pack(side="left")
 
         mid = ttk.Frame(win)
         mid.pack(fill="both", expand=True, padx=8)
@@ -1335,7 +1345,7 @@ class App:
                     txt_ck.delete("1.0", "end")
                     txt_ck.insert("1.0", st["cookie"])
                     btn_fetch.config(text="浏览器登录抓取", state="normal")
-                    _stat("已抓取 %d 条 Cookie 并填入,记得点「保存当前源」。" %
+                    _stat("已抓取 %d 条 Cookie 并填入,记得点「保存到所选」。" %
                           len([p for p in st["cookie"].split("; ") if p]),
                           "#0066cc")
                 else:
@@ -1397,74 +1407,102 @@ class App:
 
         def refresh_list():
             kw = var_filter.get().strip().lower()
+            keep = {tbl.item(i, "values")[1] for i in tbl.selection()}  # 刷新后保住选中
             tbl.delete(*tbl.get_children())
+            new_sel = []
             for s in self.sources:
                 nm = (s.get("bookSourceName") or "").strip()
                 u = (s.get("bookSourceUrl") or "").strip()
                 if kw and kw not in nm.lower() and kw not in u.lower():
                     continue
                 mark = "● " if u in self._auth else ""
-                tbl.insert("", "end", values=(mark + nm, u))
+                iid = tbl.insert("", "end", values=(mark + nm, u))
+                if u in keep:
+                    new_sel.append(iid)
+            if new_sel:
+                tbl.selection_set(new_sel)
 
-        def on_select(_e=None):
-            sel = tbl.selection()
+        def on_sel_change(sel):
+            """kit 回调:单选回填该源配置;多选进批量模式(清空输入待填);空选复位。"""
+            lbl_cnt.config(text="已选 %d" % len(sel))
+            if len(sel) == 1:
+                name, u = tbl.item(list(sel)[0], "values")
+                cur_url[0] = u
+                cfg = self._auth.get(u) or {}
+                txt_ck.delete("1.0", "end")
+                txt_ck.insert("1.0", cfg.get("cookie") or "")
+                hd = cfg.get("header")
+                var_hd.set(json.dumps(hd, ensure_ascii=False)
+                           if isinstance(hd, dict) and hd else "")
+                lbl_cur.config(text="%s · %s" % (name, u), foreground="#222")
+            elif sel:
+                cur_url[0] = ""
+                txt_ck.delete("1.0", "end")
+                var_hd.set("")
+                lbl_cur.config(text="已选 %d 个源(批量应用:填好后点「保存到所选」)"
+                               % len(sel), foreground="#0066cc")
+            else:
+                cur_url[0] = ""
+                lbl_cur.config(text="(未选中)", foreground="#888")
+
+        def _parse_header(raw):
+            """header 输入解析:JSON 优先,失败回退 ast(容错单引号/无引号写法)。"""
+            if not raw:
+                return {}
+            header = None
+            try:
+                header = json.loads(raw)
+            except Exception:
+                try:
+                    import ast
+                    header = ast.literal_eval(raw)
+                except Exception:
+                    header = None
+            return header if isinstance(header, dict) else None
+
+        def save_sel():
+            sel = sorted(self._auth_kit.get())
             if not sel:
-                return
-            name, u = tbl.item(sel[0], "values")
-            cur_url[0] = u
-            cfg = self._auth.get(u) or {}
-            txt_ck.delete("1.0", "end")
-            txt_ck.insert("1.0", cfg.get("cookie") or "")
-            hd = cfg.get("header")
-            var_hd.set(json.dumps(hd, ensure_ascii=False)
-                       if isinstance(hd, dict) and hd else "")
-            lbl_cur.config(text="%s · %s" % (name, u), foreground="#222")
-
-        def save_one():
-            u = cur_url[0]
-            if not u:
-                messagebox.showinfo("登录头", "先在上方列表选中一个书源。", parent=win)
+                messagebox.showinfo("登录头", "先在上方列表选中至少一个书源。", parent=win)
                 return
             cookie = txt_ck.get("1.0", "end").strip()
             header = {}
             raw = var_hd.get().strip()
             if raw:
-                try:
-                    header = json.loads(raw)
-                except Exception:
-                    try:
-                        import ast
-                        header = ast.literal_eval(raw)   # 容错:{Referer: 'xx'} 单引号写法
-                    except Exception:
-                        header = None
-                if header is None or not isinstance(header, dict):
+                header = _parse_header(raw)
+                if header is None:
                     messagebox.showerror(
                         "登录头", "header 不是合法的 {\"键\": \"值\"} JSON,未保存。",
                         parent=win)
                     return
+            urls = {tbl.item(i, "values")[1] for i in sel}
             if cookie or header:
                 item = {}
                 if cookie:
                     item["cookie"] = cookie
                 if header:
                     item["header"] = header
-                self._auth[u] = item
+                for u in urls:
+                    self._auth[u] = dict(item)
             else:
-                self._auth.pop(u, None)          # 两项都空 = 清除该源配置
+                for u in urls:                   # 两项都空 = 移除所选源的配置
+                    self._auth.pop(u, None)
             save_auth_state(self._auth)
             engine.set_auth(self._auth)
             refresh_list()
-            self.log("登录头已保存: %s" % u)
+            self.log("登录头已保存: %d 个源" % len(urls))
 
-        def del_one():
-            u = cur_url[0]
-            if u and u in self._auth:
+        def del_sel():
+            sel = self._auth_kit.get()
+            urls = {tbl.item(i, "values")[1] for i in sel}
+            removed = [u for u in urls if u in self._auth]
+            for u in removed:
                 self._auth.pop(u, None)
+            if removed:
                 save_auth_state(self._auth)
                 engine.set_auth(self._auth)
                 refresh_list()
-                on_select()
-                self.log("已删除登录头: %s" % u)
+                self.log("已删除 %d 个源的登录头" % len(removed))
 
         def clear_all():
             if not self._auth:
@@ -1477,11 +1515,11 @@ class App:
                 refresh_list()
                 self.log("已清空全部登录头。")
 
-        ttk.Button(btns, text="保存当前源", command=save_one).pack(side="left")
-        ttk.Button(btns, text="删除当前源", command=del_one).pack(side="left", padx=4)
+        ttk.Button(btns, text="保存到所选", command=save_sel).pack(side="left")
+        ttk.Button(btns, text="删除所选", command=del_sel).pack(side="left", padx=4)
         ttk.Button(btns, text="清空全部", command=clear_all).pack(side="left", padx=4)
         ttk.Button(btns, text="关闭", command=close_win).pack(side="right")
-        tbl.bind("<<TreeviewSelect>>", on_select)
+        self._auth_kit = TreeMultiSelect(tbl, win, on_change=on_sel_change)
         var_filter.trace_add("write", lambda *_: refresh_list())
         win.protocol("WM_DELETE_WINDOW", close_win)
         refresh_list()
