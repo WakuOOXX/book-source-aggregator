@@ -1337,25 +1337,52 @@ class App:
                 auth_sess["pending"] = None
                 if st["state"] == "launched":
                     auth_sess["phase"] = "launched"
-                    btn_fetch.config(text="我登录好了 → 抓取", state="normal")
-                    _stat("浏览器已启动,请在浏览器里登录;完成后点本按钮抓取 Cookie。")
+                    if batch["active"]:
+                        btn_fetch.config(text="抓取本站(%d/%d)"
+                                         % (batch["idx"] + 1, len(batch["hosts"])),
+                                         state="normal")
+                        _stat("批量 %d/%d: %s —— 在浏览器里登录(已登录可忽略),"
+                              "点「抓取本站」;不用配 Cookie 点「跳过该站」。"
+                              % (batch["idx"] + 1, len(batch["hosts"]),
+                                 batch["hosts"][batch["idx"]]))
+                    else:
+                        btn_fetch.config(text="我登录好了 → 抓取", state="normal")
+                        _stat("浏览器已启动,请在浏览器里登录;完成后点本按钮抓取 Cookie。")
                 elif st["state"] == "captured":
-                    cdp_cookie.close(auth_sess["handle"])
-                    auth_sess["handle"] = None
-                    auth_sess["phase"] = "idle"
                     txt_ck.delete("1.0", "end")
                     txt_ck.insert("1.0", st["cookie"])
-                    btn_fetch.config(text="浏览器登录抓取", state="normal")
-                    _stat("已抓取 %d 条 Cookie 并填入 → 上方选中目标源(可多选)→ 点「保存到所选」" %
-                          len([p for p in st["cookie"].split("; ") if p]),
-                          "#0066cc")
-                else:
-                    if auth_sess["handle"]:
+                    if batch["active"]:
+                        host = batch["hosts"][batch["idx"]]
+                        n = 0
+                        if st["cookie"]:
+                            for u in batch["targets"][host]:
+                                cfg = dict(self._auth.get(u) or {})
+                                cfg["cookie"] = st["cookie"]
+                                self._auth[u] = cfg
+                                n += 1
+                            save_auth_state(self._auth)
+                            engine.set_auth(self._auth)
+                        self.log("批量: 已保存 %s 的 Cookie(%d 个源)" % (host, n))
+                        batch_next()
+                    else:
                         cdp_cookie.close(auth_sess["handle"])
-                    auth_sess["handle"] = None
-                    auth_sess["phase"] = "idle"
-                    btn_fetch.config(text="浏览器登录抓取", state="normal")
-                    _stat(st["msg"], "#cc0000")
+                        auth_sess["handle"] = None
+                        auth_sess["phase"] = "idle"
+                        btn_fetch.config(text="浏览器登录抓取", state="normal")
+                        _stat("已抓取 %d 条 Cookie 并填入 → 上方选中目标源(可多选)→ 点「保存到所选」" %
+                              len([p for p in st["cookie"].split("; ") if p]),
+                              "#0066cc")
+                else:
+                    msg = st["msg"]
+                    if batch["active"]:
+                        batch_finish("批量抓取中止: %s" % msg, "#cc0000")
+                    else:
+                        if auth_sess["handle"]:
+                            cdp_cookie.close(auth_sess["handle"])
+                        auth_sess["handle"] = None
+                        auth_sess["phase"] = "idle"
+                        btn_fetch.config(text="浏览器登录抓取", state="normal")
+                        _stat(msg, "#cc0000")
             poll_job[0] = win.after(150, poll_fetch)
 
         def on_fetch():
@@ -1405,14 +1432,127 @@ class App:
 
                 threading.Thread(target=_grab, daemon=True).start()
 
-        btn_fetch.config(command=on_fetch)
 
         def close_win():
             if poll_job[0]:
                 win.after_cancel(poll_job[0])
+            batch["active"] = False
             if auth_sess["handle"]:
                 cdp_cookie.close(auth_sess["handle"])
             win.destroy()
+
+        # —— 批量抓取:选中源(默认全部)按站点去重,逐站访问;每站登录后点
+        # 「抓取本站」即保存 Cookie 并自动换下一站(浏览器与登录态跨站保持) ——
+        batch = {"active": False, "hosts": [], "targets": {}, "idx": -1}
+
+        def batch_finish(msg, color="#0066cc"):
+            batch["active"] = False
+            if auth_sess["handle"]:
+                cdp_cookie.close(auth_sess["handle"])
+            auth_sess["handle"] = None
+            auth_sess["phase"] = "idle"
+            btn_fetch.config(text="浏览器登录抓取", state="normal")
+            btn_skip.pack_forget()
+            btn_bstop.pack_forget()
+            btn_bstart.pack(side="left", padx=4)
+            refresh_list()
+            _stat(msg, color)
+            self.log(msg)
+
+        def batch_next():
+            batch["idx"] += 1
+            if batch["idx"] >= len(batch["hosts"]):
+                batch_finish("批量抓取结束: 共处理 %d 个站点,Cookie 已全部注入。"
+                             % len(batch["hosts"]))
+                return
+            host = batch["hosts"][batch["idx"]]
+            url = sorted(batch["targets"][host])[0]
+            btn_fetch.config(state="disabled")
+            _stat("批量 %d/%d: 正在打开 %s …"
+                  % (batch["idx"] + 1, len(batch["hosts"]), host))
+
+            def _open():
+                try:
+                    if auth_sess["handle"] is None:
+                        auth_sess["handle"] = cdp_cookie.launch_for_auth(
+                            url, APP_DIR / "auth_profile")
+                    else:
+                        cdp_cookie.navigate(auth_sess["handle"], url)
+                    auth_sess["pending"] = {"state": "launched"}
+                except Exception as e:
+                    auth_sess["pending"] = {"state": "error",
+                                            "msg": "打开 %s 失败: %s" % (host, e)}
+
+            threading.Thread(target=_open, daemon=True).start()
+
+        def batch_start():
+            sel = self._auth_kit.get()
+            urls = {tbl.item(i, "values")[1] for i in sel}
+            if not urls:
+                if not messagebox.askyesno(
+                        "批量抓取", "没有选中书源。对全部 %d 个源按站点批量抓取?"
+                        % len(self.sources), parent=win):
+                    return
+                urls = {tbl.item(i, "values")[1] for i in tbl.get_children()}
+            from urllib.parse import urlsplit
+            targets = {}
+            for u in urls:
+                u = u.strip()
+                if "://" not in u:
+                    u = "http://" + u
+                h = (urlsplit(u).hostname or "").lower()
+                if h:
+                    targets.setdefault(h, set()).add(u)
+            batch["hosts"] = sorted(targets)
+            batch["targets"] = targets
+            batch["idx"] = -1
+            if not batch["hosts"]:
+                messagebox.showinfo("批量抓取", "选中的源没有有效网址。", parent=win)
+                return
+            if not messagebox.askyesno(
+                    "批量抓取",
+                    "将依次访问 %d 个不同站点:每站登录后点「抓取本站」,"
+                    "Cookie 自动保存并跳下一站(已登录的站点无需重复登录)。"
+                    "确定开始?" % len(batch["hosts"]), parent=win):
+                return
+            batch["active"] = True
+            btn_bstart.pack_forget()
+            btn_skip.pack(side="left", padx=4)
+            btn_bstop.pack(side="left")
+            self.log("批量抓取开始: %d 个站点(来源 %d 个书源)"
+                     % (len(batch["hosts"]), len(urls)))
+            batch_next()
+
+        def batch_grab():
+            host = batch["hosts"][batch["idx"]]
+            auth_sess["phase"] = "capturing"
+            btn_fetch.config(state="disabled")
+            _stat("正在抓取 %s 的 Cookie…" % host)
+            handle = auth_sess["handle"]
+
+            def _grab():
+                try:
+                    auth_sess["pending"] = {
+                        "state": "captured",
+                        "cookie": cdp_cookie.fetch_cookies(handle, host)}
+                except Exception as e:
+                    auth_sess["pending"] = {"state": "error",
+                                            "msg": "抓取失败: %s" % e}
+
+            threading.Thread(target=_grab, daemon=True).start()
+
+        def batch_skip():
+            batch_next()
+
+        def batch_stop():
+            batch_finish("批量抓取已结束(已完成站点的 Cookie 保留)。")
+
+        def on_fetch_click():
+            if batch["active"]:
+                if auth_sess["phase"] == "launched":
+                    batch_grab()
+                return
+            on_fetch()
 
         def refresh_list():
             kw = var_filter.get().strip().lower()
@@ -1531,6 +1671,11 @@ class App:
         ttk.Button(btns, text="保存到所选", command=save_sel).pack(side="left")
         ttk.Button(btns, text="删除所选", command=del_sel).pack(side="left", padx=4)
         ttk.Button(btns, text="清空全部", command=clear_all).pack(side="left", padx=4)
+        btn_bstart = ttk.Button(btns, text="批量抓取", command=batch_start)
+        btn_bstart.pack(side="left", padx=4)
+        btn_skip = ttk.Button(btns, text="跳过该站", command=batch_skip)
+        btn_bstop = ttk.Button(btns, text="结束批量", command=batch_stop)
+        btn_fetch.config(command=on_fetch_click)
         ttk.Button(btns, text="关闭", command=close_win).pack(side="right")
         self._auth_kit = TreeMultiSelect(tbl, win, on_change=on_sel_change)
         var_filter.trace_add("write", lambda *_: refresh_list())

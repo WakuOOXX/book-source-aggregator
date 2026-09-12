@@ -129,6 +129,52 @@ def _domain_matches(host, cookie_domain):
     return h == d or h.endswith("." + d)
 
 
+def _http_json(port, path):
+    import urllib.request
+    with urllib.request.urlopen("http://127.0.0.1:%d%s" % (port, path),
+                                timeout=3) as r:
+        return json.loads(r.read().decode("utf-8"))
+
+
+def _cdp_call(handle, msg_id, method, params=None, timeout=8):
+    """浏览器级 CDP 单次调用(连接→发送→等对应 id 的响应)。"""
+    from websocket import create_connection
+    ws = create_connection(handle["ws_url"], timeout=timeout)
+    try:
+        ws.send(json.dumps({"id": msg_id, "method": method,
+                            "params": params or {}}))
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            resp = json.loads(ws.recv())
+            if resp.get("id") == msg_id:
+                return resp
+        raise RuntimeError("CDP 响应超时: %s" % method)
+    finally:
+        ws.close()
+
+
+def navigate(handle, url):
+    """在既有浏览器中新开标签页打开 url,并关闭其它页面标签(单标签模式)。
+
+    批量抓取换站用:浏览器与登录态保持,只换页面。返回新 targetId。
+    """
+    resp = _cdp_call(handle, 1, "Target.createTarget", {"url": url})
+    new_id = (resp.get("result") or {}).get("targetId")
+    if not new_id:
+        raise RuntimeError("打开新标签页失败。")
+    try:                                     # 收掉旧标签,防站点多时堆内存
+        for t in _http_json(handle["port"], "/json/list"):
+            if t.get("type") == "page" and t.get("id") != new_id:
+                try:
+                    _cdp_call(handle, 2, "Target.closeTarget",
+                              {"targetId": t["id"]}, timeout=5)
+                except Exception:
+                    pass
+    except Exception:
+        pass
+    return new_id
+
+
 def fetch_cookies(handle, host):
     """经 CDP 抓浏览器全部 Cookie,过滤出 host 的,拼成 "k=v; k2=v2" 字符串。"""
     try:
