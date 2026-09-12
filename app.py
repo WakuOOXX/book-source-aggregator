@@ -53,6 +53,9 @@ VERIFY_WORKERS = 384
 # 校验搜索兜底:这些失效原因的源值得用真实搜索规则复测(首页被 WAF 拦/超时
 # ≠ 源不可用,起点 202、69书吧 403 这类首页拦爬虫但搜索接口正常的源很多)。
 SEARCH_FALLBACK_REASONS = {"timeout", "http_403", "http_429", "http_503"}
+# 批量自动抓取:站点内无鼠标/键盘操作满该秒数 → 自动抓取并跳下一站;
+# 用户在页面里点击/输入(CDP 注入监听)会重置倒计时,给登录留时间。
+AUTO_IDLE_SECS = 5
 # 正文下载是另一回事:同一本书的章节全来自同一个站,并发越高越容易触发限流/封禁,
 # 所以刻意压低,不要跟着搜索一起调大。
 DOWNLOAD_WORKERS = 10
@@ -1336,6 +1339,7 @@ class App:
                 auth_sess["pending"] = None
                 if st["state"] == "launched":
                     auth_sess["phase"] = "launched"
+                    batch["last_act"] = time.time()      # 新站就绪: 倒计时从此起算
                     warn = st.get("warn") or ""
                     if batch["active"]:
                         btn_fetch.config(text="抓取本站(%d/%d)"
@@ -1399,6 +1403,7 @@ class App:
                         auth_sess["phase"] = "idle"
                         btn_fetch.config(text="浏览器登录抓取", state="normal")
                         _stat(msg, "#cc0000")
+            _auto_tick()
             poll_job[0] = win.after(150, poll_fetch)
 
         def on_fetch():
@@ -1461,8 +1466,12 @@ class App:
             win.destroy()
 
         # —— 批量抓取:选中源(默认全部)按站点去重,逐站访问;每站登录后点
-        # 「抓取本站」即保存 Cookie 并自动换下一站(浏览器与登录态跨站保持) ——
-        batch = {"active": False, "hosts": [], "targets": {}, "idx": -1}
+        # 「抓取本站」即保存 Cookie 并自动换下一站(浏览器与登录态跨站保持)。
+        # 自动模式(v1.6.4):页面内无操作满 AUTO_IDLE_SECS 秒自动抓取跳站,
+        # 用户在页面里点击/输入会重置倒计时(给登录留时间),全程零点击。 ——
+        batch = {"active": False, "auto": False, "paused": False,
+                 "hosts": [], "targets": {}, "idx": -1,
+                 "last_act": 0.0, "last_url": "", "tick_t": 0.0, "stat_t": 0.0}
 
         def batch_finish(msg, color="#0066cc"):
             batch["active"] = False
@@ -1473,7 +1482,9 @@ class App:
             btn_fetch.config(text="浏览器登录抓取", state="normal")
             btn_skip.pack_forget()
             btn_bstop.pack_forget()
+            btn_bpause.pack_forget()
             btn_bstart.pack(side="left", padx=4)
+            btn_bauto.pack(side="left")
             refresh_list()
             _stat(msg, color)
             self.log(msg)
@@ -1514,7 +1525,7 @@ class App:
                   % (batch["idx"] + 1, len(batch["hosts"]), host))
             _open_current()
 
-        def batch_start():
+        def batch_start(auto=False):
             sel = self._auth_kit.get()
             urls = {tbl.item(i, "values")[1] for i in sel}
             if not urls:
@@ -1538,19 +1549,39 @@ class App:
             if not batch["hosts"]:
                 messagebox.showinfo("批量抓取", "选中的源没有有效网址。", parent=win)
                 return
-            if not messagebox.askyesno(
-                    "批量抓取",
-                    "将依次访问 %d 个不同站点:每站登录后点「抓取本站」,"
-                    "Cookie 自动保存并跳下一站(已登录的站点无需重复登录)。"
-                    "确定开始?" % len(batch["hosts"]), parent=win):
+            if auto:
+                tip = ("全自动模式:依次访问 %d 个站点,页面内无操作 %d 秒即自动"
+                       "抓取 Cookie 并跳下一站;要登录的站,在页面里点击/输入"
+                       "就会重置倒计时。确定开始?" % (len(batch["hosts"]),
+                                                    AUTO_IDLE_SECS))
+            else:
+                tip = ("将依次访问 %d 个不同站点:每站登录后点「抓取本站」, "
+                       "Cookie 自动保存并跳下一站(已登录的站点无需重复登录)。"
+                       "确定开始?" % len(batch["hosts"]))
+            if not messagebox.askyesno("批量抓取", tip, parent=win):
                 return
             batch["active"] = True
+            batch["auto"] = auto
+            batch["paused"] = False
+            batch["last_act"] = 0.0
+            batch["last_url"] = ""
+            batch["tick_t"] = 0.0
             btn_bstart.pack_forget()
+            btn_bauto.pack_forget()
             btn_skip.pack(side="left", padx=4)
             btn_bstop.pack(side="left")
-            self.log("批量抓取开始: %d 个站点(来源 %d 个书源)"
-                     % (len(batch["hosts"]), len(urls)))
+            if auto:
+                btn_bpause.config(text="暂停自动")
+                btn_bpause.pack(side="left", padx=4)
+            self.log("批量抓取开始(%s): %d 个站点(来源 %d 个书源)"
+                     % ("自动" if auto else "手动", len(batch["hosts"]), len(urls)))
             batch_next()
+
+        def toggle_pause():
+            batch["paused"] = not batch["paused"]
+            btn_bpause.config(text="继续自动" if batch["paused"] else "暂停自动")
+            if batch["paused"]:
+                _stat("已暂停自动跳转:点「抓取本站」手动抓,或再点「继续自动」。")
 
         def batch_grab():
             host = batch["hosts"][batch["idx"]]
@@ -1575,6 +1606,35 @@ class App:
                                             "msg": "抓取失败: %s" % e}
 
             threading.Thread(target=_grab, daemon=True).start()
+
+        def _auto_tick():
+            """自动模式:页面无操作满 AUTO_IDLE_SECS 秒 → 抓取本站并跳下一站。"""
+            if not (batch["active"] and batch["auto"] and not batch["paused"]):
+                return
+            if auth_sess["phase"] != "launched":
+                return
+            now = time.time()
+            if now - batch["tick_t"] < 0.7:          # 节流 ~1.4Hz
+                return
+            batch["tick_t"] = now
+            handle = auth_sess["handle"]
+            pages = cdp_cookie.page_urls(handle)
+            url = next((p for p in pages if p.startswith("http")), "")
+            if url and url != batch["last_url"]:
+                batch["last_url"] = url
+                batch["last_act"] = now              # 页面跳转(含登录提交)= 活动
+            act_ms = cdp_cookie.page_activity(handle)
+            if act_ms and act_ms / 1000.0 > batch["last_act"]:
+                batch["last_act"] = act_ms / 1000.0  # 页面内点击/输入 = 活动
+            left = AUTO_IDLE_SECS - (now - batch["last_act"])
+            if left <= 0:
+                batch_grab()                         # 与手动抓取同一保存/跳转路径
+            elif now - batch["stat_t"] >= 1.0:
+                batch["stat_t"] = now
+                _stat("自动 %d/%d: %s —— %ds 后无操作自动跳下一站"
+                      " (在页面里点击/输入会重置倒计时)"
+                      % (batch["idx"] + 1, len(batch["hosts"]),
+                         batch["hosts"][batch["idx"]], int(left) + 1))
 
         def batch_skip():
             batch_next()
@@ -1706,8 +1766,13 @@ class App:
         ttk.Button(btns, text="保存到所选", command=save_sel).pack(side="left")
         ttk.Button(btns, text="删除所选", command=del_sel).pack(side="left", padx=4)
         ttk.Button(btns, text="清空全部", command=clear_all).pack(side="left", padx=4)
-        btn_bstart = ttk.Button(btns, text="批量抓取", command=batch_start)
+        btn_bstart = ttk.Button(btns, text="批量抓取",
+                                command=lambda: batch_start(False))
         btn_bstart.pack(side="left", padx=4)
+        btn_bauto = ttk.Button(btns, text="自动抓取",
+                               command=lambda: batch_start(True))
+        btn_bauto.pack(side="left")
+        btn_bpause = ttk.Button(btns, text="暂停自动", command=toggle_pause)
         btn_skip = ttk.Button(btns, text="跳过该站", command=batch_skip)
         btn_bstop = ttk.Button(btns, text="结束批量", command=batch_stop)
         btn_fetch.config(command=on_fetch_click)

@@ -75,6 +75,25 @@ def _free_port():
     return port
 
 
+def _kill_profile_processes(profile_dir):
+    """强杀仍占用本 profile 的浏览器残留进程。
+
+    只按命令行里的 profile 路径过滤 —— 绝不碰用户日常使用的浏览器。
+    terminate() 是异步的,主进程死后残留子进程可能短暂占着 profile 锁,
+    导致下一次 launch 的新进程"启动即退出"。
+    """
+    try:
+        pat = str(profile_dir).replace("'", "''")
+        ps = ("Get-CimInstance Win32_Process "
+              "-Filter \"Name='msedge.exe' or Name='chrome.exe'\" | "
+              "Where-Object { $_.CommandLine -like '*%s*' } | "
+              "ForEach-Object { Stop-Process -Id $_.ProcessId -Force }" % pat)
+        subprocess.run(["powershell", "-NoProfile", "-Command", ps],
+                       capture_output=True, timeout=20)
+    except Exception:
+        pass
+
+
 _last_handle = None          # 本模块当前拉起的浏览器会话(同一 profile 只能有一个)
 
 
@@ -93,34 +112,42 @@ def launch_for_auth(site_url, profile_dir, timeout=30):
         raise RuntimeError("未找到 Chrome/Edge 浏览器,请手动粘贴 Cookie。")
     site_url = normalize_url(site_url)
     os.makedirs(profile_dir, exist_ok=True)
-    port = _free_port()
-    proc = subprocess.Popen(
-        [exe, "--user-data-dir=" + str(profile_dir),
-         "--remote-debugging-port=%d" % port,
-         "--remote-allow-origins=*",     # Chrome 111+ 默认拒绝 WS 握手
-         "--no-first-run", "--no-default-browser-check",
-         "--window-size=960,860", site_url],
-        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     import urllib.request
-    deadline = time.time() + timeout
-    ws_url = ""
-    while time.time() < deadline:
-        if proc.poll() is not None:
-            raise RuntimeError("浏览器启动后立即退出了。")
+    last_err = None
+    for _attempt in range(3):                # 同 profile 旧实例未死透会顶掉新进程
+        port = _free_port()
+        proc = subprocess.Popen(
+            [exe, "--user-data-dir=" + str(profile_dir),
+             "--remote-debugging-port=%d" % port,
+             "--remote-allow-origins=*",     # Chrome 111+ 默认拒绝 WS 握手
+             "--no-first-run", "--no-default-browser-check",
+             "--window-size=960,860", site_url],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        ws_url = ""
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            if proc.poll() is not None:
+                last_err = "浏览器启动后立即退出了(可能有同配置的旧实例未退出)"
+                break
+            try:
+                with urllib.request.urlopen(
+                        "http://127.0.0.1:%d/json/version" % port, timeout=2) as r:
+                    ws_url = json.loads(r.read().decode("utf-8"))[
+                        "webSocketDebuggerUrl"]
+                break
+            except Exception:
+                time.sleep(0.5)
+        if ws_url:
+            handle = {"proc": proc, "port": port, "ws_url": ws_url}
+            _last_handle = handle
+            return handle
         try:
-            with urllib.request.urlopen(
-                    "http://127.0.0.1:%d/json/version" % port, timeout=2) as r:
-                ws_url = json.loads(r.read().decode("utf-8"))[
-                    "webSocketDebuggerUrl"]
-            break
+            proc.terminate()
         except Exception:
-            time.sleep(0.5)
-    if not ws_url:
-        proc.terminate()
-        raise RuntimeError("浏览器调试端口未就绪(超时)。")
-    handle = {"proc": proc, "port": port, "ws_url": ws_url}
-    _last_handle = handle
-    return handle
+            pass
+        _kill_profile_processes(profile_dir)   # 清残留后重试
+        time.sleep(1.0)
+    raise RuntimeError(last_err or "浏览器调试端口未就绪(超时)。")
 
 
 def _domain_matches(host, cookie_domain):
@@ -206,6 +233,59 @@ def is_alive(handle):
         return True
     except Exception:
         return False
+
+
+def page_activity(handle):
+    """注入页面活动监听(幂等)并返回最近一次用户活动的时间戳(ms, 无则 0)。
+
+    监听 click/keydown/submit/touchstart/change —— 用户在页面里点击/输入
+    会刷新 __bd_a;自动批量模式据此判断"用户还在操作"以暂停倒计时。
+    需要 attach 到页面 target 的会话执行 Runtime.evaluate。
+    """
+    try:
+        from websocket import create_connection
+        pages = [t for t in _http_json(handle["port"], "/json/list")
+                 if t.get("type") == "page"]
+        if not pages:
+            return 0
+        ws = create_connection(handle["ws_url"], timeout=5)
+        try:
+            ws.send(json.dumps({"id": 1, "method": "Target.attachToTarget",
+                                "params": {"targetId": pages[0]["id"],
+                                           "flatten": True}}))
+            sid = None
+            deadline = time.time() + 5
+            while time.time() < deadline:
+                resp = json.loads(ws.recv())
+                if resp.get("id") == 1:
+                    sid = (resp.get("result") or {}).get("sessionId")
+                    break
+            if not sid:
+                return 0
+            js = ("(function(){if(!window.__bd_w){window.__bd_w=1;"
+                  "window.__bd_a=Date.now();"
+                  "['click','keydown','submit','touchstart','change']"
+                  ".forEach(function(t){document.addEventListener(t,"
+                  "function(){window.__bd_a=Date.now();},true);});}"
+                  "return window.__bd_a||0;})()")
+            ws.send(json.dumps({"id": 2, "sessionId": sid,
+                                "method": "Runtime.evaluate",
+                                "params": {"expression": js,
+                                           "returnByValue": True}}))
+            deadline = time.time() + 5
+            while time.time() < deadline:
+                resp = json.loads(ws.recv())
+                if resp.get("id") == 2:
+                    v = ((resp.get("result") or {}).get("result") or {}).get("value")
+                    try:
+                        return int(v or 0)
+                    except Exception:
+                        return 0
+            return 0
+        finally:
+            ws.close()
+    except Exception:
+        return 0
 
 
 def navigate(handle, url):
