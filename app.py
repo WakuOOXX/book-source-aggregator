@@ -1337,17 +1337,23 @@ class App:
                 auth_sess["pending"] = None
                 if st["state"] == "launched":
                     auth_sess["phase"] = "launched"
+                    warn = st.get("warn") or ""
                     if batch["active"]:
                         btn_fetch.config(text="抓取本站(%d/%d)"
                                          % (batch["idx"] + 1, len(batch["hosts"])),
                                          state="normal")
-                        _stat("批量 %d/%d: %s —— 在浏览器里登录(已登录可忽略),"
-                              "点「抓取本站」;不用配 Cookie 点「跳过该站」。"
-                              % (batch["idx"] + 1, len(batch["hosts"]),
-                                 batch["hosts"][batch["idx"]]))
+                        base = ("批量 %d/%d: %s —— 在浏览器里登录(已登录可忽略),"
+                                "点「抓取本站」;不用配 Cookie 点「跳过该站」。"
+                                % (batch["idx"] + 1, len(batch["hosts"]),
+                                   batch["hosts"][batch["idx"]]))
+                        _stat(base + (" ⚠ " + warn if warn else ""),
+                              "#cc0000" if warn else "#888")
                     else:
                         btn_fetch.config(text="我登录好了 → 抓取", state="normal")
-                        _stat("浏览器已启动,请在浏览器里登录;完成后点本按钮抓取 Cookie。")
+                        if warn:
+                            _stat(warn + " 仍可尝试抓取,或换一个源。", "#cc0000")
+                        else:
+                            _stat("浏览器已启动,请在浏览器里登录;完成后点本按钮抓取 Cookie。")
                 elif st["state"] == "captured":
                     txt_ck.delete("1.0", "end")
                     txt_ck.insert("1.0", st["cookie"])
@@ -1362,16 +1368,25 @@ class App:
                                 n += 1
                             save_auth_state(self._auth)
                             engine.set_auth(self._auth)
-                        self.log("批量: 已保存 %s 的 Cookie(%d 个源)" % (host, n))
+                            self.log("批量: 已保存 %s 的 Cookie(%d 个源)" % (host, n))
+                        else:
+                            self.log("批量: %s 未抓到 Cookie(可能打不开/不是目标站),已跳过"
+                                     % host)
                         batch_next()
                     else:
                         cdp_cookie.close(auth_sess["handle"])
                         auth_sess["handle"] = None
                         auth_sess["phase"] = "idle"
-                        btn_fetch.config(text="浏览器登录抓取", state="normal")
-                        _stat("已抓取 %d 条 Cookie 并填入 → 上方选中目标源(可多选)→ 点「保存到所选」" %
-                              len([p for p in st["cookie"].split("; ") if p]),
-                              "#0066cc")
+                        if st["cookie"]:
+                            btn_fetch.config(text="浏览器登录抓取", state="normal")
+                            _stat("已抓取 %d 条 Cookie 并填入 → 上方选中目标源(可多选)→ 点「保存到所选」" %
+                                  len([p for p in st["cookie"].split("; ") if p]),
+                                  "#0066cc")
+                        else:
+                            btn_fetch.config(text="重试抓取", state="normal")
+                            _stat("没抓到该站点的 Cookie —— 浏览器打开的可能不是目标站点"
+                                  "(网址无效会落到 Edge 主页),或该站没种 Cookie。"
+                                  "可点「重试抓取」或手动粘贴。", "#cc0000")
                 else:
                     msg = st["msg"]
                     if batch["active"]:
@@ -1406,9 +1421,12 @@ class App:
 
                 def _launch(url=url):
                     try:
-                        auth_sess["handle"] = cdp_cookie.launch_for_auth(
+                        h = cdp_cookie.launch_for_auth(
                             url, APP_DIR / "auth_profile")
-                        auth_sess["pending"] = {"state": "launched"}
+                        auth_sess["handle"] = h
+                        auth_sess["pending"] = {
+                            "state": "launched",
+                            "warn": cdp_cookie.page_mismatch(h, url)}
                     except Exception as e:
                         auth_sess["pending"] = {"state": "error", "msg": str(e)}
 
@@ -1478,7 +1496,9 @@ class App:
                             url, APP_DIR / "auth_profile")
                     else:
                         cdp_cookie.navigate(auth_sess["handle"], url)
-                    auth_sess["pending"] = {"state": "launched"}
+                    auth_sess["pending"] = {
+                        "state": "launched",
+                        "warn": cdp_cookie.page_mismatch(auth_sess["handle"], url)}
                 except Exception as e:
                     auth_sess["pending"] = {"state": "error",
                                             "msg": "打开 %s 失败: %s" % (host, e)}

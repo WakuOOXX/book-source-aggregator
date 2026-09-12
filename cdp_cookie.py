@@ -91,6 +91,7 @@ def launch_for_auth(site_url, profile_dir, timeout=30):
     exe = find_browser_exe()
     if not exe:
         raise RuntimeError("未找到 Chrome/Edge 浏览器,请手动粘贴 Cookie。")
+    site_url = normalize_url(site_url)
     os.makedirs(profile_dir, exist_ok=True)
     port = _free_port()
     proc = subprocess.Popen(
@@ -129,6 +130,49 @@ def _domain_matches(host, cookie_domain):
     return h == d or h.endswith("." + d)
 
 
+def normalize_url(url):
+    """清洗站点网址:去空格/引号/#片段,缺协议头补 https://;无效则抛 RuntimeError。
+
+    书源包里 bookSourceUrl 脏值不少(尾部空格、无协议头、#后带乱码)——
+    不清洗就传给浏览器会打不开目标站,Edge 会兜底显示自己的主页,
+    用户看到的就是"跳到了 Edge 主页,什么都没发生"。
+    """
+    from urllib.parse import urlsplit
+    u = (url or "").strip().strip("\"'").split("#", 1)[0].strip()
+    if not u:
+        raise RuntimeError("网址为空。")
+    if "://" not in u:
+        u = "https://" + u
+    if not (urlsplit(u).hostname or "").strip():
+        raise RuntimeError("网址无效(解析不出主机名): %s" % url)
+    return u
+
+
+def page_urls(handle):
+    """当前全部页面标签的 URL(诊断:确认浏览器真到了目标站)。"""
+    try:
+        return [t.get("url") or "" for t in _http_json(handle["port"], "/json/list")
+                if t.get("type") == "page"]
+    except Exception:
+        return []
+
+
+def page_mismatch(handle, url, wait=8):
+    """等待并检查浏览器页面是否落在目标主机。返回 ""(正常)或警告文本。"""
+    from urllib.parse import urlsplit
+    host = (urlsplit(normalize_url(url)).hostname or "").lower()
+    deadline = time.time() + wait
+    while time.time() < deadline:
+        for p in page_urls(handle):
+            ph = (urlsplit(p).hostname or "").lower()
+            if ph and (ph == host or ph.endswith("." + host)
+                       or host.endswith("." + ph)):
+                return ""
+        time.sleep(0.5)
+    return ("注意: 浏览器打开的页面不是 %s —— 可能网址打不开,落到了起始页,"
+            "Cookie 会抓不到。" % host)
+
+
 def _http_json(port, path):
     import urllib.request
     with urllib.request.urlopen("http://127.0.0.1:%d%s" % (port, path),
@@ -158,6 +202,7 @@ def navigate(handle, url):
 
     批量抓取换站用:浏览器与登录态保持,只换页面。返回新 targetId。
     """
+    url = normalize_url(url)
     resp = _cdp_call(handle, 1, "Target.createTarget", {"url": url})
     new_id = (resp.get("result") or {}).get("targetId")
     if not new_id:
