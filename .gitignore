@@ -34,3 +34,4 @@ _local/
 tests/
 verify_sources.py
 启动下载器.bat
+_ref/

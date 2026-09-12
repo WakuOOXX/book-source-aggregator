@@ -12,13 +12,12 @@ from concurrent.futures import ThreadPoolExecutor
 from tkinter import ttk, filedialog, messagebox, simpledialog
 from pathlib import Path
 
-import requests
 
 import cdp_cookie
 from selkit import TreeMultiSelect
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from legado import engine, export
+from legado import engine, export, fetcher
 from legado.fetcher import DEFAULT_UA
 from legado.normalize import merge_hits, dedupe_hits, dedupe_sources
 from selpolicy import (MIN_DRAG, DOUBLE_MS, apply_click, apply_range,
@@ -693,12 +692,12 @@ class App:
                 return None
             try:
                 hd = engine.source_headers(s)                    # 含用户登录头/Cookie
-                r = requests.get(url, headers=hd, timeout=12,
-                                 verify=False, allow_redirects=True)
+                r = fetcher.request("GET", url, headers=hd, timeout=12,
+                                    verify=False, allow_redirects=True)
                 if r.status_code < 400:
                     return ("ok", r.status_code)
                 reason, status = ("http_%d" % r.status_code, r.status_code)
-            except requests.exceptions.Timeout:
+            except fetcher.TIMEOUT_EXCS:
                 reason, status = ("timeout", None)
             except Exception:
                 reason, status = ("connect", None)

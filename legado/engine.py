@@ -153,7 +153,9 @@ def search_sources(sources, key, on_progress=None, stop=None, workers=24,
                     req["url"] = urljoin(base, req["url"])
                 headers = source_headers(s, req.get("headers"))
                 url, text = fetch(s.get("bookSourceName", "?"), req["url"], req["method"],
-                                  req.get("body", ""), headers, _clamp_timeout(s))
+                                  req.get("body", ""), headers, _clamp_timeout(s),
+                                  retry=req.get("retry") or 0,
+                                  charset=req.get("charset") or "")
             except Exception:
                 return s, [], False
             if not text:
@@ -254,7 +256,9 @@ def fetch_book_info(source, book_url, timeout=None):
         headers = source_headers(source, req.get("headers"))
         url, text = fetch(source.get("bookSourceName", "?"), req["url"],
                           req["method"], req.get("body", ""), headers,
-                          timeout if timeout else _clamp_timeout(source))
+                          timeout if timeout else _clamp_timeout(source),
+                          retry=req.get("retry") or 0,
+                          charset=req.get("charset") or "")
         if not text:
             return {}
         dom = rules.parse_dom(text)
@@ -300,7 +304,9 @@ def _resolve_toc_url(source, book_url, timeout=None):
         headers = source_headers(source, req.get("headers"))
         url, text = fetch(source.get("bookSourceName", "?"), req["url"], req["method"],
                           req.get("body", ""), headers,
-                          timeout if timeout else _clamp_timeout(source))
+                          timeout if timeout else _clamp_timeout(source),
+                          retry=req.get("retry") or 0,
+                          charset=req.get("charset") or "")
         dom = rules.parse_dom(text)
         href = rules.extract_value(dom, toc_rule)
         if href:
@@ -339,7 +345,9 @@ def fetch_toc(source, book_url, on_progress=None, stop=None, timeout=None, deadl
                 hd.update(req["headers"])
             url, text = fetch(source.get("bookSourceName", "?"), req["url"], req["method"],
                               req.get("body", ""), hd,
-                              timeout if timeout else _clamp_timeout(source))
+                              timeout if timeout else _clamp_timeout(source),
+                              retry=req.get("retry") or 0,
+                              charset=req.get("charset") or "")
         except Exception as e:
             if guard == 1:
                 raise RuntimeError("目录页抓取失败: %s" % e)
@@ -384,7 +392,9 @@ def _fetch_chapter(source, url, base, headers):
     if req.get("headers"):
         hd.update(req["headers"])
     page_url, text = fetch(source.get("bookSourceName", "?"), req["url"], req["method"],
-                           req.get("body", ""), hd, _clamp_timeout(source))
+                           req.get("body", ""), hd, _clamp_timeout(source),
+                           retry=req.get("retry") or 0,
+                           charset=req.get("charset") or "")
     dom = rules.parse_dom(text)
     parts = []
     # 多页正文

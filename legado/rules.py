@@ -36,14 +36,24 @@ def subst(raw: str, ctx: dict) -> str:
     return re.sub(r"\{\{\s*([\w.]+?)\s*\}\}", rep, raw)
 
 
+def _opt_int(v, default=0):
+    try:
+        return int(str(v).strip())
+    except Exception:
+        return default
+
+
 def parse_request(raw: str, ctx: dict) -> dict:
-    """→ dict(url, method, body, headers)。支持 'url,{json}' 与纯 URL(GET)。"""
+    """→ dict(url, method, body, headers, retry, charset, useWebView)。
+    支持 'url,{json}' 与纯 URL(GET);retry/charset/useWebView 为 URL option
+    (参照 Legado: {"retry":3} 非 2xx/连接异常重试, {"charset":"gbk"} 显式解码)。"""
     r = subst(raw, ctx).strip()
     if r.startswith("data:") or r.startswith("javascript:"):
         raise RuleError("不支持的 URL 类型: %s" % r[:40])
     m = re.match(r"^(.*?),\s*(\{.*\})\s*$", r, re.S)
     if not m:
-        return {"url": r, "method": "GET", "body": "", "headers": None}
+        return {"url": r, "method": "GET", "body": "", "headers": None,
+                "retry": 0, "charset": "", "useWebView": False}
     url, cfgtext = m.group(1).strip(), m.group(2)
     try:
         cfg = json.loads(cfgtext)
@@ -56,6 +66,9 @@ def parse_request(raw: str, ctx: dict) -> dict:
         "method": str(cfg.get("method", "GET")).upper(),
         "body": cfg.get("body", ""),
         "headers": cfg.get("headers") or None,
+        "retry": _opt_int(cfg.get("retry")),
+        "charset": str(cfg.get("charset") or ""),
+        "useWebView": bool(cfg.get("useWebView")),
     }
 
 
