@@ -8,6 +8,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from urllib.parse import urljoin
 
 from . import rules
+from . import jsengine
 from .fetcher import fetch, DEFAULT_UA
 from .normalize import (clean_author, clean_kind, clean_last_chapter,
                         clean_name, dedupe_hits, merge_hits)
@@ -61,7 +62,13 @@ def source_groups(sources):
 
 
 def critical_js(src) -> str:
-    """返回用到的关键规则中是否含 @js/<js>。有则返回说明串,否则 ''。"""
+    """返回用到的关键规则中是否含 @js/<js>。有则返回说明串,否则 ''。
+
+    v1.7.0:JS 引擎(mini-racer)可用时不再整源跳过 —— 含 JS 的源照常参与
+    搜索/下载,脚本失败由规则层归约为空结果;无引擎时行为不变。
+    """
+    if jsengine.HAS_JS:
+        return ""
     fields = [
         ("search", src.get("searchUrl", "")),
         ("header", src.get("header", "")),
@@ -147,8 +154,11 @@ def search_sources(sources, key, on_progress=None, stop=None, workers=24,
         def one(s):
             rs = s.get("ruleSearch") or {}
             try:
-                req = rules.parse_request(s["searchUrl"], {"key": k, "page": 1})
                 base = (s.get("bookSourceUrl") or "").strip()
+                # 页面上下文:searchUrl JS(签名/时间戳等)需要 key/baseUrl
+                rules.set_page_context(key=k, page=1, src_key=s.get("bookSourceName", "?"),
+                                       base_url=base)
+                req = rules.parse_request(s["searchUrl"], {"key": k, "page": 1, "baseUrl": base})
                 if base and not req["url"].lower().startswith(("http://", "https://")):
                     req["url"] = urljoin(base, req["url"])
                 headers = source_headers(s, req.get("headers"))
@@ -156,6 +166,8 @@ def search_sources(sources, key, on_progress=None, stop=None, workers=24,
                                   req.get("body", ""), headers, _clamp_timeout(s),
                                   retry=req.get("retry") or 0,
                                   charset=req.get("charset") or "")
+                # 搜索页上下文:ruleSearch 内 JS(java.getString 等)可用
+                rules.set_page_context(base_url=url, page_text=text)
             except Exception:
                 return s, [], False
             if not text:
@@ -249,7 +261,8 @@ def fetch_book_info(source, book_url, timeout=None):
     rbi = source.get("ruleBookInfo") or {}
     if not isinstance(rbi, dict) or not rbi:
         return {}
-    if rules.uses_js_text(json.dumps(rbi, ensure_ascii=False)):
+    # 规则含 JS:无引擎时跳过(旧行为);有引擎时交给 JS 引擎跑
+    if rules.uses_js_text(json.dumps(rbi, ensure_ascii=False)) and not jsengine.HAS_JS:
         return {}
     try:
         req = rules.parse_request(book_url, {})
@@ -262,6 +275,7 @@ def fetch_book_info(source, book_url, timeout=None):
         if not text:
             return {}
         dom = rules.parse_dom(text)
+        rules.set_page_context(base_url=url, page_text=text)
         out = {}
         for field, key in (("name", "name"), ("author", "author"),
                            ("kind", "kind"), ("lastChapter", "last_chapter"),
@@ -308,6 +322,7 @@ def _resolve_toc_url(source, book_url, timeout=None):
                           retry=req.get("retry") or 0,
                           charset=req.get("charset") or "")
         dom = rules.parse_dom(text)
+        rules.set_page_context(base_url=url, page_text=text)
         href = rules.extract_value(dom, toc_rule)
         if href:
             return urljoin(url, href)
@@ -323,8 +338,10 @@ def fetch_toc(source, book_url, on_progress=None, stop=None, timeout=None, deadl
     deadline: time.time() 时间戳,超过后停止翻页(探测阶段用来限制总耗时)。
     """
     rc = source.get("ruleContent") or {}
-    if isinstance(rc, dict) and rules.uses_js_text(json.dumps(rc, ensure_ascii=False)):
-        raise RuntimeError("该源正文规则依赖 JS,暂不支持")
+    if (isinstance(rc, dict)
+            and rules.uses_js_text(json.dumps(rc, ensure_ascii=False))
+            and not jsengine.HAS_JS):
+        raise RuntimeError("该源正文规则依赖 JS,且 JS 引擎不可用")
     toc_url = _resolve_toc_url(source, book_url, timeout)
     rt = source.get("ruleToc") or {}
     if not isinstance(rt, dict) or not rt.get("chapterList"):
@@ -334,6 +351,7 @@ def fetch_toc(source, book_url, on_progress=None, stop=None, timeout=None, deadl
     cur = toc_url
     guard = 0
     headers = source_headers(source)
+    rules.set_page_context(src_key=source.get("bookSourceName", "?"))
     while cur and guard < 8:
         guard += 1
         if deadline is not None and time.time() > deadline and guard > 1:
@@ -353,6 +371,7 @@ def fetch_toc(source, book_url, on_progress=None, stop=None, timeout=None, deadl
                 raise RuntimeError("目录页抓取失败: %s" % e)
             break
         dom = rules.parse_dom(text)
+        rules.set_page_context(base_url=url, page_text=text)
         nodes = rules.extract_list(dom, rt.get("chapterList") or "")
         added = 0
         for n in nodes:
@@ -396,6 +415,8 @@ def _fetch_chapter(source, url, base, headers):
                            retry=req.get("retry") or 0,
                            charset=req.get("charset") or "")
     dom = rules.parse_dom(text)
+    rules.set_page_context(base_url=page_url, page_text=text,
+                           src_key=source.get("bookSourceName", "?"))
     parts = []
     # 多页正文
     rc = source.get("ruleContent") or {}
@@ -435,6 +456,7 @@ def _fetch_chapter(source, url, base, headers):
         cur_page, text = fetch(source.get("bookSourceName", "?"), nurl, "GET",
                                "", hd, _clamp_timeout(source))
         cur_dom = rules.parse_dom(text)
+        rules.set_page_context(base_url=cur_page, page_text=text)
     body = "\n".join(p for p in parts if p)
     # replaceRegex(可能多行多条)
     if replace_rules:

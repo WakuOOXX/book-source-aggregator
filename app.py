@@ -18,7 +18,7 @@ import cdp_cookie
 from selkit import TreeMultiSelect
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from legado import engine, export, fetcher
+from legado import engine, export, fetcher, jsengine
 from legado.fetcher import DEFAULT_UA
 from legado.normalize import merge_hits, dedupe_hits, dedupe_sources
 from selpolicy import (MIN_DRAG, DOUBLE_MS, apply_click, apply_range,
@@ -304,6 +304,11 @@ class App:
         self._build_ui()
         self._anchor = None        # Shift 连续选锚点行(资源管理器语义)
         self.root.after(120, self._drain)
+        # —— JS 引擎可用性提示(v1.7.0):决定含 JS 书源是否解锁 ——
+        if jsengine.HAS_JS:
+            self.log("JS 引擎:已启用(mini-racer/V8,1484 个含 JS 书源解锁)。")
+        else:
+            self.log("JS 引擎:未安装 mini-racer,含 JS 书源仍跳过(pip install mini-racer)。")
         self._reload_all()
         self._restore_pending = bool(mem.get("selected"))   # 搜索结果到达后尝试恢复
 

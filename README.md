@@ -34,7 +34,7 @@ Windows 桌面应用 · Python + tkinter · 自研 Legado 规则引擎
 
 - 一次搜索并发，结果边搜边上屏，不用等全部跑完。
 - 直搜无果时自动生成关键词变体重试，只打这一轮还活着的源，结果按相关度排序。
-- 依赖 JS 或登录态的书源自动跳过，不会报错中断。
+- 含 JS 的书源已解锁（内置 V8 引擎执行 Legado 的 `java.*` 脚本；未装 mini-racer 时自动回退为跳过），登录态书源自动跳过，不会报错中断。
 
 选书阶段（和资源管理器同一套操作习惯）：
 
@@ -79,6 +79,7 @@ exe 免 Python 环境，已在 Windows 11 实测。**发布包不含书源**（�
 git clone https://github.com/WakuOOXX/novel-downloader.git
 cd novel-downloader
 pip install requests beautifulsoup4 lxml websocket-client curl_cffi
+pip install mini-racer    # 可选:JS 引擎,解锁含 JS 的书源(1484 个)
 python app.py        # 用 pythonw app.py 启动可免控制台窗口
 ```
 
@@ -155,8 +156,8 @@ python app.py        # 用 pythonw app.py 启动可免控制台窗口
 **下载时大量 `[抓取失败]`？**
 站点限流或章节页反爬。等几分钟重试，或者换一个源的同一本书。
 
-**提示「目录为空」「该源正文规则依赖 JS」？**
-这个源用不了，程序会自动换下一个候选，不用管。
+**提示「目录为空」？**
+这个源可能需要登录或已改版，程序会自动换下一个候选，不用管。（含 JS 书源已解锁；若启动日志显示「JS 引擎：未安装 mini-racer」，`pip install mini-racer` 可再解锁一批。）
 
 **双击 exe 没反应或冷启动很慢？**
 `--onefile` 打包的 exe 首次启动要解压到临时目录，慢一两秒正常。确认杀毒软件没有拦截。

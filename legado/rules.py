@@ -9,10 +9,13 @@ Legado(开源阅读)规则引擎 —— 纯规则书源语法子集实现。
 * 叶子:@text @textNodes @ownText @html @href @src @value 及其余按属性
 * 取值:##正则##替换##... 链式替换;|| 备选;&& 拼接(字符串级)
 * 集合规则返回节点,单值规则返回字符串(自动取第一/拼接)
-不支持 @js / <js> 脚本 —— 调用方需预先跳过含脚本的书源,这里抛 RuleError。
+* JS(v1.7.0):<js>…</js> 内嵌与 @js: 前缀、其余 {{expr}} —— 仅当 JS 引擎
+  (legado/jsengine.py,可选依赖 mini-racer)可用时执行;未注入/不可用时
+  行为与旧版完全一致(调用方预先跳过含脚本的书源)。
 """
 import re
 import json
+import threading
 from bs4 import BeautifulSoup, Tag, NavigableString
 
 ATTRS = {"text", "textnodes", "owntext", "html", "all", "href", "src",
@@ -43,13 +46,37 @@ def _opt_int(v, default=0):
         return default
 
 
+def _request_js(r: str) -> str:
+    """searchUrl/请求 URL 内的 JS(<js>/@js:):{{key}}/{{page}} 已由 subst
+    替换完毕;注入 key/page/searchKey/baseUrl 跑 JS,返回产出文本(通常是
+    'url,'+JSON.stringify(option))再交给现有解析。失败保留原文(容错)。"""
+    if "@js:" in r:
+        pre, script = r.split("@js:", 1)
+        out = _js_run(script, result=pre.strip())
+        return (out or "").strip() if out else r.strip()
+    m = _JS_BLOCK.search(r)
+    if m:
+        pre, script, post = r[:m.start()], m.group(1), r[m.end():]
+        out = _js_run(script, result=pre.strip())
+        if out is None:
+            return r.strip()
+        return (pre + out + post).strip()
+    return r
+
+
 def parse_request(raw: str, ctx: dict) -> dict:
     """→ dict(url, method, body, headers, retry, charset, useWebView)。
     支持 'url,{json}' 与纯 URL(GET);retry/charset/useWebView 为 URL option
-    (参照 Legado: {"retry":3} 非 2xx/连接异常重试, {"charset":"gbk"} 显式解码)。"""
+    (参照 Legado: {"retry":3} 非 2xx/连接异常重试, {"charset":"gbk"} 显式解码)。
+    JS 引擎可用时:<js>/@js: 先经 JS 求值,其余 {{expr}} 按 JS 表达式展开。"""
     r = subst(raw, ctx).strip()
     if r.startswith("data:") or r.startswith("javascript:"):
         raise RuleError("不支持的 URL 类型: %s" % r[:40])
+    if _has_js(r):
+        if _js() is not None:
+            r = _request_js(r)
+    elif "{{" in r:
+        r = js_fill_expressions(r).strip()
     m = re.match(r"^(.*?),\s*(\{.*\})\s*$", r, re.S)
     if not m:
         return {"url": r, "method": "GET", "body": "", "headers": None,
@@ -72,13 +99,29 @@ def parse_request(raw: str, ctx: dict) -> dict:
     }
 
 
+def _has_js(rule: str) -> bool:
+    return "<js>" in rule or "@js:" in rule
+
+
 def parse_header(raw) -> dict:
-    """书源 header 字段(JSON 字符串)。@js 或解析失败返回 {}。"""
+    """书源 header 字段(JSON 字符串)。@js/<js> 生成:JS 引擎可用时求值并
+    解析为 dict,失败回退 {};无引擎一律 {}(旧行为)。"""
     if not raw:
         return {}
     raw = str(raw).strip()
     if raw.startswith("@js") or "<js>" in raw:
-        return {}
+        if _js() is None:
+            return {}
+        if raw.startswith("@js"):
+            script = raw.split(":", 1)[1] if ":" in raw[3:] else raw[3:]
+        else:
+            m = _JS_BLOCK.search(raw)
+            script = m.group(1) if m else ""
+        try:
+            h = json.loads(_js_run(script) or "")
+            return h if isinstance(h, dict) else {}
+        except Exception:
+            return {}
     try:
         h = json.loads(raw)
         return h if isinstance(h, dict) else {}
@@ -527,6 +570,9 @@ def _split_leaf(rule_body: str):
 def extract_chain(root, rule: str, want="str"):
     """统一入口。root: BeautifulSoup/Tag/字典/列表。want='str'|'nodes'|'values'。"""
     rule = (rule or "").strip()
+    # 规则内 JS(<js>/@js:):引擎可用时交给 JS,失败归约为空(见 _apply_js_rule)
+    if _has_js(rule) and _js() is not None:
+        return _apply_js_rule(root, rule, want)
     # 定位第一个 '##'(括号外)
     hp = _first_hash_hash(rule)
     base, tail = (rule[:hp], rule[hp:]) if hp >= 0 else (rule, "")
@@ -558,8 +604,22 @@ def extract_chain(root, rule: str, want="str"):
         else:
             out = ""
         return apply_replaces(out, tail)
+    # 当前节点属性(Legado 惯用,如 @onclick/@data-url):@attr
+    m = re.match(r"^@([\w\-]+)$", base)
+    if m:
+        if isinstance(root, Tag):
+            return apply_replaces(_leaf(root, m.group(1)), tail)
+        return ""
     if base == "":
         return apply_replaces("", tail)
+    # CSS 简单后代组合器(空格分隔,如 ".catalog_ls li a"):拆成 @ 链。
+    # 仅当每段都是无空白的类/tag/id 简写(ASCII 词)时才拆,避免误伤
+    # text.含空格文本/字面量;旧版此类规则必空(类名带空格永不匹配),
+    # 本转换只可能"从无到有",不改既有命中。
+    if " " in base and not base.startswith(("/", "text.", "tag.")):
+        parts = base.split()
+        if all(re.match(r"^[.#]?[A-Za-z][\w\-]*$", p) for p in parts):
+            base = "@".join(parts)
     is_selector = base.startswith(("class.", "id.", "tag.", "text.", "#", ".")) or "@" in base or _TAGLIKE.match(base)
     if not is_selector:
         return apply_replaces(base, tail)  # 字面量
@@ -569,7 +629,16 @@ def extract_chain(root, rule: str, want="str"):
             if isinstance(root, Tag):
                 return apply_replaces(_leaf(root, leaf), tail)
         return ""
-    steps = [_parse_token(t) for t in toks]
+    # 后代组合器再补一刀:@ 叶子已摘除后,token 内的空格(".sumchapter a")
+    # 同样拆为多步(条件同上:每段都是无空白的 ASCII 简写)
+    expanded = []
+    for t in toks:
+        parts = t.split()
+        if len(parts) > 1 and all(re.match(r"^[.#]?[A-Za-z][\w\-]*$", p) for p in parts):
+            expanded.extend(parts)
+        else:
+            expanded.append(t)
+    steps = [_parse_token(t) for t in expanded]
     nodes = _run_chain(root, steps, leaf)
     if want == "nodes":
         return [n for n in nodes if isinstance(n, Tag)]
@@ -602,6 +671,9 @@ def _fill_vars(rule: str, root) -> str:
 def extract_value(root, rule: str) -> str:
     """单值:支持 || 备选 与 && 拼接;dict/list 根支持 {{$.x}} 变量。"""
     rule = (rule or "").strip()
+    # 规则内 JS:优先于 ||/&& 切分(脚本里可能出现这些分隔符)
+    if _has_js(rule) and _js() is not None:
+        return _apply_js_rule(root, rule, "str")
     if isinstance(root, (dict, list)):
         filled = _fill_vars(rule, root)
         txt = filled if filled != rule else rule
@@ -612,7 +684,7 @@ def extract_value(root, rule: str) -> str:
             return ""
         if "{{$" in txt or "{{ $." in txt:
             return ""  # 变量无法解析(依赖 JS/上下文)
-        return txt
+        return js_fill_expressions(txt)
     alts = _split_outside(rule, ["||"])
     for alt in alts:
         if not alt.strip():
@@ -630,6 +702,10 @@ def extract_value(root, rule: str) -> str:
 def extract_list(root, rule: str):
     """集合规则 → 节点列表。规则可为多条 ||。"""
     rule = (rule or "").strip()
+    # 规则内 JS:优先于 || 切分(脚本里可能出现分隔符);JS 返回 JSON 数组
+    # 可直接作节点列表(extract_value 对 dict/list 根按 JSONPath 取字段)
+    if _has_js(rule) and _js() is not None:
+        return _apply_js_rule(root, rule, "nodes")
     out = []
     for alt in _split_outside(rule, ["||"]):
         try:
@@ -644,6 +720,127 @@ def uses_js_text(text: str) -> bool:
     if not text:
         return False
     return "<js>" in text or "@js" in text or "@js:" in text
+
+
+# ========================================================== JS 引擎接线 =====
+# v1.7.0:JS 引擎(legado/jsengine.py)为可选依赖,这里只做"注入 + 委托":
+# * set_js_engine(模块)/set_js_engine(None) 显式注入或禁用;未注入时首次
+#   使用自动导入 jsengine(其 HAS_JS 反映 mini-racer 可用性)。
+# * 一切 JS 失败(脚本报错/超时/引擎缺失)归约为空串/空列表,绝不抛出 ——
+#   单源失败不影响其它源,更不影响整轮搜索(384 并发)。
+# * 页面上下文(base_url/page_text/key…)走线程局部,各线程互不串扰。
+_JS = None                       # 引擎模块或 None
+_JS_INITED = False               # 是否已初始化(区分"未注入"与"显式禁用")
+_TL = threading.local()
+_JS_BLOCK = re.compile(r"<js>(.*?)</js>", re.S)
+_JS_EXPR = re.compile(r"\{\{(.+?)\}\}", re.S)
+
+
+def set_js_engine(ctx):
+    """注入 JS 引擎模块(需提供 run(script, variables, base_url, page_text,
+    src_key, timeout));传 None 显式禁用(回归旧行为)。"""
+    global _JS, _JS_INITED
+    _JS, _JS_INITED = ctx, True
+
+
+def set_page_context(**kw):
+    """记录当前线程正在处理的页面上下文:base_url(JS 的 baseUrl)、
+    page_text(java.getString 用)、key/page(searchUrl JS 用)、src_key。"""
+    d = getattr(_TL, "page", None)
+    if d is None:
+        d = {}
+        _TL.page = d
+    d.update(kw)
+
+
+def _js():
+    """返回可用的 JS 引擎模块;未注入则延迟导入;不可用/禁用返回 None。"""
+    global _JS, _JS_INITED
+    if not _JS_INITED:
+        from . import jsengine
+        _JS, _JS_INITED = jsengine, True
+    return _JS if (_JS is not None and getattr(_JS, "HAS_JS", False)) else None
+
+
+def _js_run(script, result=""):
+    """跑一段规则内 JS:注入 result/baseUrl/key/page,失败返回 None。"""
+    js = _js()
+    if js is None or not script:
+        return None
+    ctx = getattr(_TL, "page", None) or {}
+    base = ctx.get("base_url", "")
+    variables = {"result": result or "", "baseUrl": base,
+                 "key": ctx.get("key", ""), "searchKey": ctx.get("key", ""),
+                 "page": ctx.get("page", "")}
+    try:
+        return js.run(str(script), variables=variables, base_url=base,
+                      page_text=ctx.get("page_text", ""),
+                      src_key=ctx.get("src_key") or "js")
+    except Exception:
+        return None
+
+
+def _root_from_text(text: str):
+    """JS 结果 → 下一段规则的提取根(JSON 优先,否则按 HTML DOM)。"""
+    t = (text or "").strip()
+    if t[:1] in ("{", "["):
+        try:
+            return json.loads(t)
+        except Exception:
+            pass
+    return parse_dom(text)
+
+
+def _apply_js_rule(root, rule: str, want="str"):
+    """规则内 JS:<js>…</js> 内嵌 与 @js: 前缀(参照 Legado)。
+
+    * 前段规则先跑得 result(如 $.value@js:java.base64Decode(result)),
+      JS 返回值即该段结果;<js> 结果不自动抓取 —— java.ajax(result) 已在
+      JS 内抓完。
+    * JS 之后还有规则段时(如 $.x<js>…</js>$..body),把 JS 结果
+      (JSON/HTML)作为新根继续提取。
+    * want="nodes"(bookList 等):JS 返回 JSON 数组 → 直接作节点列表。
+    """
+    rule = (rule or "").strip()
+    while rule:
+        m = _JS_BLOCK.search(rule)
+        if m:
+            pre, script, post = rule[:m.start()], m.group(1), rule[m.end():]
+        elif "@js:" in rule:
+            pre, script = rule.split("@js:", 1)
+            post = ""
+        else:
+            break
+        result = extract_chain(root, pre, "str") if pre.strip() else ""
+        out = _js_run(script, result)
+        if not out:
+            return [] if want == "nodes" else ""
+        if not post.strip():
+            if want == "nodes":
+                r = _root_from_text(out)
+                return r if isinstance(r, list) else ([r] if r else [])
+            return out
+        root, rule = _root_from_text(out), post.strip()
+    return extract_chain(root, rule, want)
+
+
+def js_fill_expressions(text: str) -> str:
+    """其余 {{expr}} 按 JS 表达式求值(注入 result/key/page)。
+
+    {{$ 开头的 JSONPath 变量不在此列(_fill_vars 负责);无引擎时原样
+    返回,失败的表达式归约为空串。"""
+    if "{{" not in text:
+        return text
+    if _js() is None:
+        return text
+
+    def rep(m):
+        expr = m.group(1).strip()
+        if not expr or expr.startswith("$"):
+            return m.group(0)
+        return _js_run(expr) or ""
+
+    return _JS_EXPR.sub(rep, text)
 
 
 # ========================================================== 正文 HTML→文本 ==
