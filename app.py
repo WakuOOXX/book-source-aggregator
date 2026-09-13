@@ -9,7 +9,7 @@ import sys
 import threading
 import time
 import tkinter as tk
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from tkinter import ttk, filedialog, messagebox, simpledialog
 from pathlib import Path
 
@@ -68,6 +68,11 @@ DOWNLOAD_WORKERS = 10
 # UA 缺省 DEFAULT_UA)—— 旧版独立 VERIFY_UA(Chrome/114 Edg/114)已被 WAF 大量
 # 拦截,且连书源自带 header 都不传,是误判失效的元凶之一(2026-09-12 v1.5.5/5.6)。
 
+# 深度校验(v1.8.0):活性探测之后对每个活源追加"试搜 + 分类探测"两步真实
+# 业务探测。试搜关键词与搜索兜底救援一致;每源至多 2 个额外请求(试搜 1 +
+# 分类 1),并发沿用 VERIFY_WORKERS。
+DEEP_KEYWORD = "我的"
+
 
 def good_table_path(origin: Path) -> Path:
     """原始全量表对应的有效书源表:<原名>.good.json(与 verify_sources.py 输出一致)。"""
@@ -75,6 +80,106 @@ def good_table_path(origin: Path) -> Path:
     if name.lower().endswith(".json"):
         return origin.with_name(name[:-5] + ".good.json")
     return origin.with_name(origin.stem + ".good.json")
+
+
+def deep_table_path(origin: Path) -> Path:
+    """原始全量表对应的深度校验产物:<原名>.deep.json(v1.8.0)。"""
+    name = origin.name
+    if name.lower().endswith(".json"):
+        return origin.with_name(name[:-5] + ".deep.json")
+    return origin.with_name(origin.stem + ".deep.json")
+
+
+def deep_classify(search_err, n_hits, explore_err, n_items):
+    """深度校验判定(纯函数,便于单测):
+    → (search_verdict, explore_verdict, level)。
+
+    search_verdict: ok(≥1 命中)/ no_result(HTTP 成功但书列表空)/
+      error(网络/HTTP 失败)/ no_search(无法试搜,不判死)。
+    explore_verdict: ok / no_result / error / none(无分类能力)/
+      untested(中断未测)。
+    level(质量等级): 试搜 ok → 分类 ok=完整可用,其余=可搜(分类死≠源
+      不可用,只作附加字段);试搜空转→搜索空转;试搜失败→试搜失败;
+      无法试搜→无法试搜。"""
+    if search_err == "no_search":
+        sv = "no_search"
+    elif search_err:
+        sv = "error"
+    elif n_hits >= 1:
+        sv = "ok"
+    else:
+        sv = "no_result"
+    if explore_err == "none":
+        ev = "none"
+    elif explore_err is None:                    # 中断未测到分类阶段
+        ev = "untested"
+    elif explore_err:
+        ev = "error"
+    elif n_items >= 1:
+        ev = "ok"
+    else:
+        ev = "no_result"
+    if sv == "ok":
+        level = "完整可用" if ev == "ok" else "可搜"
+    elif sv == "no_result":
+        level = "搜索空转"
+    elif sv == "error":
+        level = "试搜失败"
+    else:
+        level = "无法试搜"
+    return sv, ev, level
+
+
+def write_deep_table(origin: Path, fn, rows, keyword, interrupted=False):
+    """写深度校验产物 <原名>.deep.json(原子写,与 error.json 同风格)。
+
+    rows 每项 = {"name","url","level","search":{verdict,hits,ms,reason},
+    "explore":{verdict,items,ms,reason}}。与 good 表"停止不写"不同,
+    深度结果是分析产物,中断时已测源的结果照常落盘(_meta.interrupted=true)。
+    返回 _meta 计数 dict(供日志摘要)。"""
+    counts = {"alive": len(rows), "search_ok": 0, "search_no_result": 0,
+              "search_error": 0, "no_search": 0,
+              "explore_ok": 0, "explore_no_result": 0, "explore_error": 0}
+    for r in rows:
+        sv = (r.get("search") or {}).get("verdict")
+        if sv == "ok":
+            counts["search_ok"] += 1
+        elif sv == "no_result":
+            counts["search_no_result"] += 1
+        elif sv == "error":
+            counts["search_error"] += 1
+        elif sv == "no_search":
+            counts["no_search"] += 1
+        ev = (r.get("explore") or {}).get("verdict")
+        if ev == "ok":
+            counts["explore_ok"] += 1
+        elif ev == "no_result":
+            counts["explore_no_result"] += 1
+        elif ev == "error":
+            counts["explore_error"] += 1
+    meta = {"generated_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+            "source_file": fn, "keyword": keyword,
+            "interrupted": bool(interrupted)}
+    meta.update(counts)
+    table = {"_meta": meta, "results": rows}
+    out = deep_table_path(origin)
+    tmp = out.with_name(out.name + ".tmp")
+    tmp.write_text(json.dumps(table, ensure_ascii=False, indent=2),
+                   encoding="utf-8")
+    os.replace(tmp, out)
+    return counts
+
+
+def _fmt_deep_summary(counts: dict) -> str:
+    """深度校验分布 → 一行中文日志(试搜 + 分类)。分类分母 = 实测分类的源数
+    (无分类能力的源不计)。"""
+    tested = (counts.get("explore_ok", 0) + counts.get("explore_no_result", 0)
+              + counts.get("explore_error", 0))
+    return ("试搜:可搜 %d · 空转 %d · 失败 %d · 无法试搜 %d;"
+            "分类:可用 %d / %d"
+            % (counts.get("search_ok", 0), counts.get("search_no_result", 0),
+               counts.get("search_error", 0), counts.get("no_search", 0),
+               counts.get("explore_ok", 0), tested))
 
 
 def _fmt_reason_summary(summary: dict) -> str:
@@ -159,14 +264,15 @@ def save_auth_state(auth: dict) -> None:
     os.replace(tmp, p)
 
 
-VERIFY_ARTIFACT_SUFFIXES = (".good.json", ".error.json")   # 校验产物后缀 = 可再生缓存
+VERIFY_ARTIFACT_SUFFIXES = (".good.json", ".error.json", ".deep.json")   # 校验产物后缀 = 可再生缓存
 
 
 def is_verify_artifact(name) -> bool:
-    """校验产物判定:*.good.json / *.error.json。
+    """校验产物判定:*.good.json / *.error.json / *.deep.json。
 
-    它们是「校验书源」跑出来的缓存(有效表/失效表),可由原始表重新生成,
-    既不能当书源输入(否则"产物再校验"形成滚雪球),也不属于用户配置。
+    它们是「校验书源」跑出来的缓存(有效表/失效表/深度校验结果),可由原始
+    表重新生成,既不能当书源输入(否则"产物再校验"形成滚雪球),也不属于
+    用户配置。
     """
     return str(name).lower().endswith(VERIFY_ARTIFACT_SUFFIXES)
 
@@ -292,8 +398,12 @@ class App:
         self.var_fmt = tk.StringVar(value=mem.get("fmt") or "epub")      # epub / txt
         self.var_mode = tk.StringVar(value=mem.get("mode") or "single")  # single / batch
         self.var_domain = tk.StringVar(value=mem.get("domain") or "自动")  # 搜索域
-        for _v in (self.var_fuzzy, self.var_rel, self.var_fmt, self.var_mode, self.var_domain):
+        self.var_deep_only = tk.BooleanVar(value=bool(mem.get("deep_only", False)))
+        for _v in (self.var_fuzzy, self.var_rel, self.var_fmt, self.var_mode,
+                   self.var_domain, self.var_deep_only):
             _v.trace_add("write", self._mem_save_opts)
+        # 深度校验判定表(引擎模块级,搜索预筛过滤用):键=(书源名,bookSourceUrl)
+        self.deep_table = {}
 
         # —— 多选交互状态(资源管理器式,常开;见 MultiSelect 相关方法)——
         self._drag = None          # 进行中的橡皮筋状态 dict 或 None
@@ -331,6 +441,9 @@ class App:
         ttk.Button(top, text="打开目录", command=self._open_src_dir).pack(side="left")
         self.btn_verify = ttk.Button(top, text="✔ 校验书源", command=self.start_verify)
         self.btn_verify.pack(side="left")
+        # 深度校验(活性 → 试搜 + 分类探测,deep.json 质量分级,v1.8.0)
+        self.btn_deep = ttk.Button(top, text="🔬 深度校验", command=self.start_deep_verify)
+        self.btn_deep.pack(side="left", padx=(6, 0))
         ttk.Button(top, text="登录头", command=self.open_auth_manager,
                    width=7).pack(side="left", padx=(6, 0))
         self.lbl_verify = ttk.Label(top, text="", foreground="#555")
@@ -356,6 +469,9 @@ class App:
         cb = ttk.Checkbutton(row2, text="模糊搜索", variable=self.var_fuzzy)
         cb.pack(side="left", padx=(8, 0))
         ttk.Checkbutton(row2, text="只看相关结果", variable=self.var_rel).pack(side="left", padx=(8, 0))
+        # 深度校验联动:开启后跳过 deep.json 判定"空转/试搜失败"的源(无记录不过滤)
+        ttk.Checkbutton(row2, text="只搜试搜通过源",
+                        variable=self.var_deep_only).pack(side="left", padx=(8, 0))
         self.btn_stop = ttk.Button(row2, text="停止", command=self.stop_all, state="disabled")
         self.btn_stop.pack(side="left", **pad)
         self.lbl_progress = ttk.Label(row2, text="", foreground="#555")
@@ -557,8 +673,9 @@ class App:
             self._update_src_text()
 
     def _cleanup_verify_artifacts(self, fn, origin):
-        """删除指定书源文件的校验产物(.good.json / .error.json)并清除验证记录。"""
-        for suffix in (".good.json", ".error.json"):
+        """删除指定书源文件的校验产物(.good.json / .error.json / .deep.json)
+        并清除验证记录。"""
+        for suffix in VERIFY_ARTIFACT_SUFFIXES:
             p = SOURCE_DIR / fn if isinstance(origin, str) else origin
             target = p.with_name(p.stem + suffix)
             if target.exists():
@@ -593,7 +710,7 @@ class App:
             return
         ps = filedialog.askopenfilenames(
             title="新加入书源(可多选;不在 shuyuan/ 的会自动复制进去;"
-                  "*.good.json / *.error.json 属校验缓存会被忽略)",
+                  "校验产物 *.good/.error/.deep.json 会被忽略)",
             filetypes=[("JSON 书源", "*.json"), ("所有文件", "*.*")],
             initialdir=str(SOURCE_DIR))
         if not ps:
@@ -623,7 +740,7 @@ class App:
             if skipped and not copied:
                 messagebox.showinfo(
                     "已忽略",
-                    "所选的都是校验产物(*.good.json / *.error.json),\n"
+                    "所选的都是校验产物(*.good.json / *.error.json / *.deep.json),\n"
                     "它们是「校验书源」生成的缓存,不能作为书源加入。\n"
                     "若想清掉它们,请点「清除缓存」。")
             else:
@@ -725,6 +842,7 @@ class App:
         else:
             self.log("未加入任何书源文件;点\"书源文件\"下拉 →「+ 新加入书源…」。")
         self._set_groups()
+        self._load_deep_tables()   # 深度判定预灌(各文件 .deep.json,搜索过滤用)
         self.lbl_verify.config(text="勾选 %d 文件 · 合并 %d 源(去重 %d)"
                                % (len(self.checked_files),
                                   len(self.sources), n_dup))
@@ -803,10 +921,8 @@ class App:
         os.replace(tmp, out)
         return summary
 
-    def start_verify(self):
-        if self.busy_verify or self.busy_search or self.busy_dl:
-            return
-        # 收集勾选且存在的原始表
+    def _collect_verify_files(self):
+        """收集勾选且存在的原始表(校验/深度校验共用)。"""
         files = []
         for fn in self.checked_files:
             p = SOURCE_DIR / fn
@@ -814,24 +930,59 @@ class App:
                 files.append((fn, p))
             else:
                 self.log("⚠ 校验跳过缺失文件: %s" % fn)
+        return files
+
+    def _verify_ui_lock(self):
+        """校验/深度校验共用的状态锁定。"""
+        self.stop_verify.clear()
+        self.busy_verify = True
+        self.btn_verify.config(state="disabled")
+        self.btn_deep.config(state="disabled")
+        self.btn_search.config(state="disabled")
+        self.btn_dl.config(state="disabled")
+        self.btn_stop.config(state="normal")
+
+    def start_verify(self):
+        if self.busy_verify or self.busy_search or self.busy_dl:
+            return
+        files = self._collect_verify_files()
         if not files:
             messagebox.showwarning("提示", "没有可校验的书源文件。"
                                            "请先在\"书源文件\"下拉中勾选。")
             return
-        self.stop_verify.clear()
-        self.busy_verify = True
-        self.btn_verify.config(state="disabled")
-        self.btn_search.config(state="disabled")
-        self.btn_dl.config(state="disabled")
-        self.btn_stop.config(state="normal")
+        self._verify_ui_lock()
         n_files = len(files)
         self.log("开始校验 %d 个书源文件(并发 %d · 超时 12s · status<400 · 重试 1 次)…"
                  % (n_files, VERIFY_WORKERS))
         self.lbl_verify.config(text="校验中 · 文件 0/%d" % n_files)
         threading.Thread(target=self._do_verify, args=(files,), daemon=True).start()
 
-    def _do_verify(self, files):
-        """逐文件校验循环。files = [(filename, Path), ...]"""
+    def start_deep_verify(self):
+        """深度校验入口:活性校验(复用 _do_verify 全套逻辑)→ 对活源试搜 +
+        分类探测 → 写 <原名>.deep.json 质量分级。"""
+        if self.busy_verify or self.busy_search or self.busy_dl:
+            return
+        files = self._collect_verify_files()
+        if not files:
+            messagebox.showwarning("提示", "没有可校验的书源文件。"
+                                           "请先在\"书源文件\"下拉中勾选。")
+            return
+        self._verify_ui_lock()
+        n_files = len(files)
+        self.log("开始深度校验 %d 个书源文件:活性探测 → 试搜「%s」+ 分类探测"
+                 "(并发 %d · 每源至多 2 个额外请求)…"
+                 % (n_files, DEEP_KEYWORD, VERIFY_WORKERS))
+        self.lbl_verify.config(text="深度校验 · 文件 0/%d" % n_files)
+        threading.Thread(target=self._do_verify, args=(files, True),
+                         daemon=True).start()
+
+    def _do_verify(self, files, deep=False):
+        """逐文件校验循环。files = [(filename, Path), ...]
+
+        deep=True(v1.8.0 深度校验):活性校验照旧跑完全套(good/error 表
+        语义不变),之后对每个活性通过的源追加试搜 + 分类探测,写
+        <原名>.deep.json。全部失效的文件不进入深度阶段。
+        """
         t_total = time.time()
         n_files = len(files)
         tot_ok, tot_bad = 0, 0
@@ -891,7 +1042,7 @@ class App:
                                       or "").strip())
 
                     try:
-                        engine.search_sources(cands, "我的", workers=VERIFY_WORKERS,
+                        engine.search_sources(cands, DEEP_KEYWORD, workers=VERIFY_WORKERS,
                                               stop=self.stop_verify, on_hit=_on_hit)
                     except Exception as e:
                         self.q.put(("log", "搜索兜底异常: %s" % e))
@@ -941,8 +1092,143 @@ class App:
                 self.q.put(("log", "✘ %s 有效表写入失败: %s" % (fn, e)))
                 continue
             self.q.put(("vfile_done", (fn, str(origin), n_ok, n_bad, elapsed)))
+            # 深度校验阶段:活源试搜 + 分类探测 → deep.json(全失效文件不进入)
+            if deep and n_ok > 0:
+                if self.stop_verify.is_set():
+                    aborted = True
+                    break
+                try:
+                    self._deep_stage(fi, n_files, fn, origin, srcs, results)
+                except Exception as e:
+                    self.q.put(("log", "✘ %s 深度校验异常: %s" % (fn, e)))
+                if self.stop_verify.is_set():      # 深度阶段中途停止:后续文件不再开始
+                    aborted = True
+                    break
         elapsed_total = time.time() - t_total
         self.q.put(("vdone", (n_files, tot_ok, tot_bad, elapsed_total, aborted)))
+
+    # ------------------------------------------------------ 深度校验阶段 -----
+    # 活性通过的源逐个试搜(关键词 DEEP_KEYWORD,走 engine.search_one 单源路径)
+    # + 分类探测(engine.explore_first_page),每源至多 2 个额外请求;并发沿用
+    # VERIFY_WORKERS。中途停止:已测源结果照常写 deep.json(_meta.interrupted),
+    # 与 good 表"停止不写"不同 —— 深度结果是分析产物,部分数据也有价值。
+    def _deep_search_one(self, s):
+        """试搜单源 → (reason, hits, ms);中止返回 None。reason 空串=网络存活。"""
+        if self.stop_verify.is_set():
+            return None
+        t0 = time.time()
+        try:
+            hits, err = engine.search_one(s, DEEP_KEYWORD)
+        except Exception as e:                     # 引擎层不该抛,兜底归因
+            hits, err = [], "connect"
+            self.q.put(("log", "⚠ 试搜异常(%s): %s"
+                        % (s.get("bookSourceName", "?"), e)))
+        return (err, len(hits), int((time.time() - t0) * 1000))
+
+    def _deep_explore_one(self, s):
+        """分类探测单源 → (reason, items, ms);中止返回 None。"""
+        if self.stop_verify.is_set():
+            return None
+        t0 = time.time()
+        try:
+            items, err = engine.explore_first_page(s)
+        except Exception as e:
+            items, err = 0, "connect"
+            self.q.put(("log", "⚠ 分类探测异常(%s): %s"
+                        % (s.get("bookSourceName", "?"), e)))
+        return (err, items, int((time.time() - t0) * 1000))
+
+    def _deep_stage(self, fi, n_files, fn, origin, srcs, results):
+        """对活性通过的源跑深度阶段并写 <原名>.deep.json + 日志分布摘要。"""
+        alive = [s for s, r in zip(srcs, results) if r and r[0] == "ok"]
+        if not alive:
+            return
+        pool = ThreadPoolExecutor(max_workers=VERIFY_WORKERS)
+
+        def _run_phase(fn_one, phase, out):
+            """并发跑一个探测阶段:as_completed 收割并节流上报进度(vdeep)。"""
+            total = len(alive)
+            futs = {pool.submit(fn_one, s): i for i, s in enumerate(alive)}
+            done = 0
+            for fut in as_completed(futs):
+                i = futs[fut]
+                try:
+                    out[i] = fut.result()
+                except Exception:
+                    out[i] = None                  # 与中止同样按未测处理
+                done += 1
+                if done % 25 == 0 or done == total:
+                    self.q.put(("vdeep", (fi + 1, n_files, fn, phase,
+                                          done, total)))
+            return out
+
+        try:
+            self.q.put(("vdeep", (fi + 1, n_files, fn, "试搜", 0, len(alive))))
+            sres = _run_phase(self._deep_search_one, "试搜", [None] * len(alive))
+            stopped = any(r is None for r in sres)
+            eres = [None] * len(alive)
+            if not stopped and not self.stop_verify.is_set():
+                self.q.put(("vdeep", (fi + 1, n_files, fn, "分类", 0, len(alive))))
+                eres = _run_phase(self._deep_explore_one, "分类", eres)
+            else:
+                stopped = True
+        finally:
+            pool.shutdown(wait=False)
+        rows = []
+        for s, sr, er in zip(alive, sres, eres):
+            if sr is None:                         # 中止未检测,不进结果
+                continue
+            if er is None:                         # 分类阶段未测到(搜索阶段已中止)
+                raw_ev, eitems, ems = None, 0, None
+            else:
+                raw_ev, eitems, ems = er
+            sv, ev, level = deep_classify(sr[0], sr[1], raw_ev, eitems)
+            rows.append({
+                "name": (s.get("bookSourceName") or "").strip(),
+                "url": (s.get("bookSourceUrl") or "").strip(),
+                "level": level,
+                "search": {"verdict": sv, "hits": sr[1], "ms": sr[2],
+                           "reason": sr[0] or None},
+                "explore": {"verdict": ev, "items": eitems, "ms": ems,
+                            "reason": (raw_ev or None) if raw_ev is not None
+                            else "untested"},
+            })
+        interrupted = stopped or self.stop_verify.is_set()
+        counts = write_deep_table(origin, fn, rows, DEEP_KEYWORD,
+                                  interrupted=interrupted)
+        self.q.put(("vdeep", (fi + 1, n_files, fn, "完成", len(rows), len(alive))))
+        self.q.put(("log", "深度结果(%s): %s%s"
+                    % (fn, _fmt_deep_summary(counts),
+                       " · 已中止,部分源未测" if interrupted else "")))
+        # 深度判定灌入引擎(搜索过滤联动):全部文件合并后统一 set_deep
+        self._load_deep_tables()
+
+    def _load_deep_tables(self):
+        """扫描清单内各文件的 .deep.json,合并灌入 engine.set_deep(搜索过滤用)。
+
+        键 = (书源名, bookSourceUrl),与跨文件去重身份(§5.7)同口径;
+        多文件合并去重后同一身份只留一条判定,重复源覆盖次序 = 清单顺序。
+        """
+        table = {}
+        for fn in self.checked_files:
+            dp = deep_table_path(SOURCE_DIR / fn)
+            try:
+                data = json.loads(dp.read_text(encoding="utf-8"))
+            except Exception:
+                continue
+            for row in (data.get("results") or []):
+                k = ((row.get("name") or "").strip(),
+                     (row.get("url") or "").strip())
+                sv = (row.get("search") or {}).get("verdict")
+                if k[0] and k[1] and sv:
+                    table[k] = sv
+        self.deep_table = table
+        engine.set_deep(table)
+        if table:
+            n_skip = sum(1 for v in table.values() if v in ("no_result", "error"))
+            self.log("深度校验记录已加载: %d 源(试搜未通过 %d —— 可勾选"
+                     "「只搜试搜通过源」在搜索时过滤)。"
+                     % (len(table), n_skip))
 
 
     def pick_out(self):
@@ -985,6 +1271,16 @@ class App:
         self._last_key = key
         self.lbl_hits.config(text="搜索中…")
         srcs = self._chosen_sources()
+        # 深度校验联动:「只搜试搜通过源」—— 跳过 deep.json 判定"搜索空转/
+        # 试搜失败"的源;未做深度校验的源(无记录)不跳过。
+        if self.var_deep_only.get():
+            skipped = [s for s in srcs if engine.deep_search_ok(s) is False]
+            if skipped:
+                srcs = [s for s in srcs if engine.deep_search_ok(s) is not False]
+                self.log("深度过滤:跳过 %d 个试搜未通过源" % len(skipped))
+            elif not self.deep_table:
+                self.log("深度过滤已开启,但尚无深度校验记录(点「🔬 深度校验」生成),"
+                         "本次未过滤。")
         fuzzy = self.var_fuzzy.get()
         domain = self.var_domain.get()
         domain_hint = " · 域[%s]" % domain if domain != "自动" else ""
@@ -1198,6 +1494,7 @@ class App:
                     "verify_dones": dones,
                     "fuzzy": bool(d.get("fuzzy", True)),
                     "rel": bool(d.get("rel", True)),
+                    "deep_only": bool(d.get("deep_only", False)),
                     "fmt": d.get("fmt") or "epub",
                     "mode": d.get("mode") or "single",
                     "domain": d.get("domain") or "自动"}
@@ -1205,7 +1502,7 @@ class App:
             # 无记忆/文件损坏:空选中 + 出厂默认选项。多选交互常开(单击仍是单选,无害)。
             return {"multi": True, "selected": [], "verify_origin": "",
                     "verify_done": {}, "sources": None, "verify_dones": {},
-                    "fuzzy": True, "rel": True,
+                    "fuzzy": True, "rel": True, "deep_only": False,
                     "fmt": "epub", "mode": "single", "domain": "自动"}
 
     def _mem_save(self, keys=None):
@@ -1246,6 +1543,7 @@ class App:
                     "verify_done": getattr(self, "verify_done", {}),
                     "fuzzy": bool(self.var_fuzzy.get()),
                     "rel": bool(self.var_rel.get()),
+                    "deep_only": bool(self.var_deep_only.get()),
                     "fmt": self.var_fmt.get() or "epub",
                     "mode": self.var_mode.get() or "single",
                     "domain": self.var_domain.get() or "自动"}
@@ -1259,6 +1557,7 @@ class App:
                               "verify_done": data["verify_done"],
                               "fuzzy": data["fuzzy"],
                               "rel": data["rel"],
+                              "deep_only": data["deep_only"],
                               "fmt": data["fmt"],
                               "mode": data["mode"],
                               "domain": data["domain"]}
@@ -1269,9 +1568,9 @@ class App:
         """清除缓存入口:清掉可再生缓存,保留用户配置。
 
         清理对象(全部可再生):
-          ① shuyuan/ 下全部校验产物(*.good.json / *.error.json);
+          ① shuyuan/ 下全部校验产物(*.good.json / *.error.json / *.deep.json);
           ② 校验记录(verify_dones + 旧字段 verify_origin/verify_done);
-          ③ 选项打勾(fuzzy/rel/fmt/mode/domain)→ 恢复出厂默认;
+          ③ 选项打勾(fuzzy/rel/deep_only/fmt/mode/domain)→ 恢复出厂默认;
           ④ 上次选中的书目(selected)。
         保留:书源勾选清单(checked_files)。它是用户配置而非缓存 ——
         旧「清除记忆」会把它压回默认单文件,导致"可用源突然只剩一个"。
@@ -1319,15 +1618,18 @@ class App:
         self._mem_last = {"multi": True, "selected": [],
                           "sources": list(self.checked_files),
                           "verify_dones": {}, "verify_origin": "", "verify_done": {},
-                          "fuzzy": True, "rel": True,
+                          "fuzzy": True, "rel": True, "deep_only": False,
                           "fmt": "epub", "mode": "single", "domain": "自动"}
         for _v, _d in ((self.var_fuzzy, True), (self.var_rel, True),
+                       (self.var_deep_only, False),
                        (self.var_fmt, "epub"), (self.var_mode, "single"),
                        (self.var_domain, "自动")):
             try:
                 _v.set(_d)         # 触发 trace → _mem_save_opts → 落盘全新状态
             except Exception:
                 pass
+        self.deep_table = {}
+        engine.set_deep({})        # deep.json 已随之删除,深度过滤表同步清空
         self._apply_selection([], notify=False)
         self._reload_all()
         messagebox.showinfo(
@@ -2578,11 +2880,16 @@ class App:
             self._mem_save_core()
             self.log("✔ 文件 %s 校验完成:有效 %d · 失效 %d · 耗时 %.0fs"
                      % (fn, n_ok, n_bad, elapsed))
+        elif kind == "vdeep":
+            fi, n_files, fn, phase, done, total = payload
+            self.lbl_verify.config(text="深度校验 文件 %d/%d · %s · %s %d/%d"
+                                   % (fi, n_files, fn, phase, done, total))
         elif kind == "vdone":
             n_files, tot_ok, tot_bad, elapsed, aborted = payload
             self.busy_verify = False
             self._set_busy(False)
             self.btn_verify.config(state="normal")
+            self.btn_deep.config(state="normal")
             self._reload_all()                  # good 表更新后重载合并源
             if aborted:
                 self.lbl_verify.config(text="校验已中止 · 有效 %d · 失效 %d" % (tot_ok, tot_bad))

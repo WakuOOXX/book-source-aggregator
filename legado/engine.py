@@ -9,6 +9,7 @@ from urllib.parse import urljoin
 
 from . import rules
 from . import jsengine
+from . import fetcher
 from .fetcher import fetch, DEFAULT_UA
 from .normalize import (clean_author, clean_kind, clean_last_chapter,
                         clean_name, dedupe_hits, merge_hits)
@@ -92,6 +93,122 @@ def _clamp_timeout(src):
     return min(max(rt, 4), 12)
 
 
+def _err_reason(e) -> str:
+    """异常 → 失效原因串,与 GUI 校验 _check_one 同口径:
+    timeout / connect(连不上、DNS 死)/ http_<状态码>。"""
+    if isinstance(e, fetcher.TIMEOUT_EXCS):
+        return "timeout"
+    code = getattr(getattr(e, "response", None), "status_code", None)
+    if code:
+        return "http_%d" % code
+    return "connect"
+
+
+# ------------------------------------------------------------ 深度校验 -----
+# 深度校验(v1.8.0,GUI 调用):活性探测之后对每个活源追加"试搜 + 分类探测"
+# 两步真实业务探测。本节只提供单源探测原语,并发编排与产物落盘在 app.py。
+
+_DEEP = {}          # (书源名, bookSourceUrl) -> 试搜判定(ok/no_result/error/no_search)
+
+
+def set_deep(table):
+    """GUI 启动/深度校验完成时刷新模块级深度判定表(搜索过滤联动用)。"""
+    global _DEEP
+    _DEEP = dict(table or {})
+
+
+def deep_search_ok(s):
+    """该源试搜判定:True=试搜通过;False=试搜未通过(空转/失败,搜索时应跳过);
+    None=无深度记录或无法试搜(no_search)—— 调用方不应过滤。
+
+    键与 normalize.source_identity(§5.7 跨文件去重身份)同口径。
+    """
+    from .normalize import source_identity
+    v = _DEEP.get(source_identity(s))
+    if v in ("ok", "no_result", "error"):
+        return v == "ok"
+    return None
+
+
+def search_one(source, key, timeout=None):
+    """单源试搜(深度校验用),复用 search_sources 的单源任务逻辑。
+
+    返回 (hits, err_reason):err_reason 为空串 = 网络存活(命中数看 hits,
+    可为 0 = 空转);非空 = 失败原因(timeout/connect/http_XXX),另有
+    "no_search"(无 searchUrl / ruleSearch 不合规 / 规则依赖 JS 且无引擎
+    —— 无法试搜,不判死)。timeout 缺省按 respondTime 夹取 [4,12]s。
+    """
+    rs = source.get("ruleSearch") or {}
+    if not (source.get("searchUrl") and isinstance(rs, dict) and rs.get("bookList")):
+        return [], "no_search"
+    if critical_js(source):
+        return [], "no_search"
+    return _search_task(source, key, timeout)
+
+
+def _first_explore_url(eu) -> str:
+    """exploreUrl 多入口(多行 / 分类::URL / JSON 数组)取第一个入口的 URL。"""
+    raw = (eu or "").strip()
+    if raw.startswith("["):
+        try:
+            arr = json.loads(raw)
+            for item in arr if isinstance(arr, list) else []:
+                if isinstance(item, dict) and (item.get("url") or "").strip():
+                    return str(item["url"]).strip()
+                if isinstance(item, str) and item.strip():
+                    return item.strip()
+        except Exception:
+            pass
+    for ln in raw.splitlines():
+        ln = ln.strip()
+        if not ln:
+            continue
+        if "::" in ln:                       # "分类名::URL" 取 URL 段
+            ln = ln.split("::", 1)[1].strip()
+        if ln:
+            return ln
+    return raw
+
+
+def explore_first_page(source, timeout=None):
+    """单源分类探测(深度校验用):exploreUrl 第一个入口 → 请求 →
+    ruleExplore.bookList 计数。
+
+    返回 (items, err_reason):items 为解析出的节点数(只计数,不清洗);
+    err_reason 空串 = 请求成功;"none" = 该源无分类能力(无 exploreUrl 或
+    ruleExplore 无 bookList,不判死);其余 = 失败原因(同 _check_one 口径)。
+    exploreUrl 缺 {{page}} 等变量按 searchUrl 同款默认值(page=1)展开。
+    """
+    re_ = source.get("ruleExplore")
+    eu = source.get("exploreUrl")
+    if not eu or not (isinstance(re_, dict) and re_.get("bookList")):
+        return 0, "none"
+    first = _first_explore_url(eu)
+    if not first:
+        return 0, "none"
+    try:
+        base = (source.get("bookSourceUrl") or "").strip()
+        rules.set_page_context(page=1, src_key=source.get("bookSourceName", "?"),
+                               base_url=base)
+        req = rules.parse_request(first, {"key": "", "page": 1, "baseUrl": base})
+        if base and not req["url"].lower().startswith(("http://", "https://")):
+            req["url"] = urljoin(base, req["url"])
+        headers = source_headers(source, req.get("headers"))
+        url, text = fetch(source.get("bookSourceName", "?"), req["url"],
+                          req["method"], req.get("body", ""), headers,
+                          timeout if timeout else _clamp_timeout(source),
+                          retry=req.get("retry") or 0,
+                          charset=req.get("charset") or "")
+        if not text:
+            return 0, "empty"
+        dom = rules.parse_dom(text)
+        rules.set_page_context(base_url=url, page_text=text)
+        items = rules.extract_list(dom, re_.get("bookList") or "")
+        return len(items), ""
+    except Exception as e:
+        return 0, _err_reason(e)
+
+
 def make_key_variants(key: str):
     """模糊搜索关键词变体:按分隔符取首段、去尾字、截前段。不含原词、至少 2 字。"""
     key = (key or "").strip()
@@ -124,6 +241,66 @@ def _searchable(s) -> bool:
     return not critical_js(s)
 
 
+def _search_task(s, k, timeout=None):
+    """单源搜索任务(search_sources 与深度试搜 search_one 共用,口径一致):
+    展开 searchUrl → 请求(含 source_headers 登录头注入/JS 引擎)→ 解析
+    bookList → 清洗四字段。
+
+    返回 (hits, err):err 为空串 = 网络存活(HTTP 成功且页面非空),与
+    search_sources 的 alive 口径一致(命中数可为 0);非空 = 失败原因
+    (timeout / connect / http_XXX / empty / parse)。"""
+    rs = s.get("ruleSearch") or {}
+    try:
+        base = (s.get("bookSourceUrl") or "").strip()
+        # 页面上下文:searchUrl JS(签名/时间戳等)需要 key/baseUrl
+        rules.set_page_context(key=k, page=1, src_key=s.get("bookSourceName", "?"),
+                               base_url=base)
+        req = rules.parse_request(s["searchUrl"], {"key": k, "page": 1, "baseUrl": base})
+        if base and not req["url"].lower().startswith(("http://", "https://")):
+            req["url"] = urljoin(base, req["url"])
+        headers = source_headers(s, req.get("headers"))
+        url, text = fetch(s.get("bookSourceName", "?"), req["url"], req["method"],
+                          req.get("body", ""), headers,
+                          timeout if timeout else _clamp_timeout(s),
+                          retry=req.get("retry") or 0,
+                          charset=req.get("charset") or "")
+        # 搜索页上下文:ruleSearch 内 JS(java.getString 等)可用
+        rules.set_page_context(base_url=url, page_text=text)
+    except Exception as e:
+        return [], _err_reason(e)
+    if not text:
+        return [], "empty"
+    try:
+        dom = rules.parse_dom(text)
+    except Exception:
+        return [], "parse"
+    out = []
+    try:
+        items = rules.extract_list(dom, rs.get("bookList") or "")
+        for it in items:
+            try:
+                name = clean_name(rules.extract_value(it, rs.get("name") or ""))
+                if not name:
+                    continue
+                bu = rules.extract_value(it, rs.get("bookUrl") or "")
+                if not bu:
+                    continue
+                out.append({
+                    "source": s,
+                    "name": name,
+                    "author": clean_author(name, rules.extract_value(it, rs.get("author") or "")),
+                    "kind": clean_kind(name, rules.extract_value(it, rs.get("kind") or "")),
+                    "book_url": urljoin(url, bu),
+                    "last_chapter": clean_last_chapter(name, rules.extract_value(it, rs.get("lastChapter") or "")),
+                    "intro": rules.extract_value(it, rs.get("intro") or ""),
+                })
+            except Exception:
+                continue
+    except Exception:
+        pass
+    return out, ""
+
+
 def search_sources(sources, key, on_progress=None, stop=None, workers=24,
                    on_hit=None, fuzzy=False):
     """并发搜索。
@@ -152,55 +329,9 @@ def search_sources(sources, key, on_progress=None, stop=None, workers=24,
         round_hits, round_alive = [], []
 
         def one(s):
-            rs = s.get("ruleSearch") or {}
-            try:
-                base = (s.get("bookSourceUrl") or "").strip()
-                # 页面上下文:searchUrl JS(签名/时间戳等)需要 key/baseUrl
-                rules.set_page_context(key=k, page=1, src_key=s.get("bookSourceName", "?"),
-                                       base_url=base)
-                req = rules.parse_request(s["searchUrl"], {"key": k, "page": 1, "baseUrl": base})
-                if base and not req["url"].lower().startswith(("http://", "https://")):
-                    req["url"] = urljoin(base, req["url"])
-                headers = source_headers(s, req.get("headers"))
-                url, text = fetch(s.get("bookSourceName", "?"), req["url"], req["method"],
-                                  req.get("body", ""), headers, _clamp_timeout(s),
-                                  retry=req.get("retry") or 0,
-                                  charset=req.get("charset") or "")
-                # 搜索页上下文:ruleSearch 内 JS(java.getString 等)可用
-                rules.set_page_context(base_url=url, page_text=text)
-            except Exception:
-                return s, [], False
-            if not text:
-                return s, [], False
-            try:
-                dom = rules.parse_dom(text)
-            except Exception:
-                return s, [], False
-            out = []
-            try:
-                items = rules.extract_list(dom, rs.get("bookList") or "")
-                for it in items:
-                    try:
-                        name = clean_name(rules.extract_value(it, rs.get("name") or ""))
-                        if not name:
-                            continue
-                        bu = rules.extract_value(it, rs.get("bookUrl") or "")
-                        if not bu:
-                            continue
-                        out.append({
-                            "source": s,
-                            "name": name,
-                            "author": clean_author(name, rules.extract_value(it, rs.get("author") or "")),
-                            "kind": clean_kind(name, rules.extract_value(it, rs.get("kind") or "")),
-                            "book_url": urljoin(url, bu),
-                            "last_chapter": clean_last_chapter(name, rules.extract_value(it, rs.get("lastChapter") or "")),
-                            "intro": rules.extract_value(it, rs.get("intro") or ""),
-                        })
-                    except Exception:
-                        continue
-            except Exception:
-                pass
-            return s, out, True
+            # 单源任务抽至 _search_task(深度校验 search_one 复用同一份逻辑)
+            hs, err = _search_task(s, k)
+            return s, hs, not err          # err 空 = 网络存活(旧 alive 口径)
 
         with ThreadPoolExecutor(max_workers=max(2, workers)) as ex:
             futs = {ex.submit(one, s): s for s in cands}
