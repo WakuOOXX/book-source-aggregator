@@ -235,23 +235,27 @@ def is_alive(handle):
         return False
 
 
-def page_activity(handle):
+def page_activity(handle, target_id=None):
     """注入页面活动监听(幂等)并返回最近一次用户活动的时间戳(ms, 无则 0)。
 
     监听 click/keydown/submit/touchstart/change —— 用户在页面里点击/输入
-    会刷新 __bd_a;自动批量模式据此判断"用户还在操作"以暂停倒计时。
-    需要 attach 到页面 target 的会话执行 Runtime.evaluate。
+    会刷新 __bd_a;自动批量模式据此判断"用户还在操作"以重置倒计时。
+    需要 attach 到页面 target 的会话执行 Runtime.evaluate;target_id 为空
+    时取第一个 page 标签(旧行为),指定时直接 attach 该标签,不再查标签
+    列表 —— 并行登录扫每标签独立活动检测用。
     """
     try:
         from websocket import create_connection
-        pages = [t for t in _http_json(handle["port"], "/json/list")
-                 if t.get("type") == "page"]
-        if not pages:
-            return 0
+        if target_id is None:
+            pages = [t for t in _http_json(handle["port"], "/json/list")
+                     if t.get("type") == "page"]
+            if not pages:
+                return 0
+            target_id = pages[0]["id"]
         ws = create_connection(handle["ws_url"], timeout=5)
         try:
             ws.send(json.dumps({"id": 1, "method": "Target.attachToTarget",
-                                "params": {"targetId": pages[0]["id"],
+                                "params": {"targetId": target_id,
                                            "flatten": True}}))
             sid = None
             deadline = time.time() + 5
@@ -316,6 +320,16 @@ def tab_url(handle, target_id):
     except Exception:
         pass
     return ""
+
+
+def tab_urls(handle):
+    """全部页面标签 {targetId: url}(一次 /json/list, 并行登录扫监控用)。"""
+    try:
+        return {t.get("id"): (t.get("url") or "")
+                for t in _http_json(handle["port"], "/json/list")
+                if t.get("type") == "page"}
+    except Exception:
+        return {}
 
 
 def all_cookies(handle):

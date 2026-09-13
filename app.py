@@ -58,7 +58,7 @@ SEARCH_FALLBACK_REASONS = {"timeout", "http_403", "http_429", "http_503"}
 # 用户在页面里点击/输入(CDP 注入监听)会重置倒计时,给登录留时间。
 AUTO_IDLE_SECS = 5
 AUTO_IDLE_FAST = 1.5    # 已配过 Cookie 的站刷新会话用快档
-AUTO_PARA_TABS = 10     # 自动批并行扫的标签数(不需要登录的站并行开)
+AUTO_PARA_TABS = 10     # 并行扫/并行登录扫的标签数默认值(「登录头」窗口「并行标签」可调 2~20)
 AUTO_PARA_SETTLE = 8.0  # 并行扫: 页面提交后再等的秒数(Set-Cookie 落地)
 # 正文下载是另一回事:同一本书的章节全来自同一个站,并发越高越容易触发限流/封禁,
 # 所以刻意压低,不要跟着搜索一起调大。
@@ -239,6 +239,40 @@ def _merge_cookie_str(old, new):
     return "; ".join("%s=%s" % (k, v) for k, v in d.items() if k)
 
 
+def _host_match(ph, host):
+    """页面主机名是否命中目标域(相等或互为子域)—— 到站判定,与 cdp_cookie 口径一致。"""
+    return bool(ph) and (ph == host or ph.endswith("." + host)
+                         or host.endswith("." + ph))
+
+
+def _para_idle(configured):
+    """并行登录扫分级静默:该站已配过 Cookie 用快档(刷新会话),全新站慢档(留登录时间)。"""
+    return AUTO_IDLE_FAST if configured else AUTO_IDLE_SECS
+
+
+def _para_clamp(v, default=AUTO_PARA_TABS):
+    """「并行标签」取值清洗:非法输入回退 default,越界收敛到 2~20。"""
+    try:
+        n = int(str(v).strip())
+    except Exception:
+        return default
+    return 2 if n < 2 else (20 if n > 20 else n)
+
+
+def _tab_due(arrived, idle, since_act, opened_for):
+    """并行登录扫单标签判定(纯函数):返回 "grab" / "timeout" / "wait"。
+
+    - 已到站且静默满 idle 秒 → grab(抓完即关,没抓到也关);
+    - 未到站且打开超过硬时限 max(10, 3×idle) → timeout(死站不再干等);
+    - 其余(含已到站但用户仍在操作,静默未满)→ wait,保护登录中的标签。
+    """
+    if arrived and since_act >= idle:
+        return "grab"
+    if not arrived and opened_for >= max(10.0, idle * 3):
+        return "timeout"
+    return "wait"
+
+
 def auth_state_path() -> Path:
     """每源登录头存储:shuyuan/auth_state.json。
 
@@ -399,8 +433,11 @@ class App:
         self.var_mode = tk.StringVar(value=mem.get("mode") or "single")  # single / batch
         self.var_domain = tk.StringVar(value=mem.get("domain") or "自动")  # 搜索域
         self.var_deep_only = tk.BooleanVar(value=bool(mem.get("deep_only", False)))
+        # 并行标签数(登录头批量抓取 Phase1/Phase2 共用,2~20):StringVar 便于 Spinbox 直绑
+        self.var_para_tabs = tk.StringVar(
+            value=str(_para_clamp(mem.get("para_tabs"))))
         for _v in (self.var_fuzzy, self.var_rel, self.var_fmt, self.var_mode,
-                   self.var_domain, self.var_deep_only):
+                   self.var_domain, self.var_deep_only, self.var_para_tabs):
             _v.trace_add("write", self._mem_save_opts)
         # 深度校验判定表(引擎模块级,搜索预筛过滤用):键=(书源名,bookSourceUrl)
         self.deep_table = {}
@@ -1495,6 +1532,7 @@ class App:
                     "fuzzy": bool(d.get("fuzzy", True)),
                     "rel": bool(d.get("rel", True)),
                     "deep_only": bool(d.get("deep_only", False)),
+                    "para_tabs": _para_clamp(d.get("para_tabs")),
                     "fmt": d.get("fmt") or "epub",
                     "mode": d.get("mode") or "single",
                     "domain": d.get("domain") or "自动"}
@@ -1503,6 +1541,7 @@ class App:
             return {"multi": True, "selected": [], "verify_origin": "",
                     "verify_done": {}, "sources": None, "verify_dones": {},
                     "fuzzy": True, "rel": True, "deep_only": False,
+                    "para_tabs": AUTO_PARA_TABS,
                     "fmt": "epub", "mode": "single", "domain": "自动"}
 
     def _mem_save(self, keys=None):
@@ -1544,6 +1583,7 @@ class App:
                     "fuzzy": bool(self.var_fuzzy.get()),
                     "rel": bool(self.var_rel.get()),
                     "deep_only": bool(self.var_deep_only.get()),
+                    "para_tabs": _para_clamp(self.var_para_tabs.get()),
                     "fmt": self.var_fmt.get() or "epub",
                     "mode": self.var_mode.get() or "single",
                     "domain": self.var_domain.get() or "自动"}
@@ -1558,6 +1598,7 @@ class App:
                               "fuzzy": data["fuzzy"],
                               "rel": data["rel"],
                               "deep_only": data["deep_only"],
+                              "para_tabs": data["para_tabs"],
                               "fmt": data["fmt"],
                               "mode": data["mode"],
                               "domain": data["domain"]}
@@ -1590,11 +1631,13 @@ class App:
         msg = ("将清除以下缓存(均可再生,不影响 shuyuan/ 里的书源文件与已下载的书):\n\n"
                "· 校验产物 %d 个 · %.1f MB\n    %s\n"
                "· 校验记录 %d 条\n"
-               "· 选项打勾 → 恢复默认(模糊开 · 相关开 · epub · 单本 · 自动)\n"
+               "· 选项打勾 → 恢复默认(模糊开 · 相关开 · epub · 单本 · 自动 ·"
+               " 并行标签 %d)\n"
                "· 上次选中的书目 %d 本\n\n"
                "保留:书源勾选清单 %d 个文件(不清)\n\n确定清除?"
                % (len(arts), total / 1048576.0, names or "(无)",
-                  len(self.verify_dones), n_sel, len(self.checked_files)))
+                  len(self.verify_dones), AUTO_PARA_TABS, n_sel,
+                  len(self.checked_files)))
         if not messagebox.askyesno("清除缓存", msg):
             return
         removed = freed = 0
@@ -1619,9 +1662,11 @@ class App:
                           "sources": list(self.checked_files),
                           "verify_dones": {}, "verify_origin": "", "verify_done": {},
                           "fuzzy": True, "rel": True, "deep_only": False,
+                          "para_tabs": AUTO_PARA_TABS,
                           "fmt": "epub", "mode": "single", "domain": "自动"}
         for _v, _d in ((self.var_fuzzy, True), (self.var_rel, True),
                        (self.var_deep_only, False),
+                       (self.var_para_tabs, str(AUTO_PARA_TABS)),
                        (self.var_fmt, "epub"), (self.var_mode, "single"),
                        (self.var_domain, "自动")):
             try:
@@ -1711,26 +1756,24 @@ class App:
             st = auth_sess["pending"]
             if st:
                 auth_sess["pending"] = None
-                if st["state"] == "para_done":
+                if st["state"] == "auto_done":
+                    # 全自动三段式终点:Phase2 并行登录扫结束即汇总,不再回串行
                     if not batch["active"]:
                         pass                       # 结束批量后迟到的结果, 丢弃
-                    elif st["n_serial"]:
-                        batch["stage"] = "serial"
-                        btn_skip.pack(side="left", padx=4)
-                        btn_bpause.config(text="暂停自动")
-                        btn_bpause.pack(side="left", padx=4)
-                        self.log("并行扫完成: 秒过 %d 站 + 并行抓到 %d 站;"
-                                 "%d 站没抓到 Cookie, 进入逐站登录模式"
-                                 % (st["n_instant"], st["n_para"], st["n_serial"]))
-                        batch_next()
+                    elif st.get("stopped"):
+                        batch_finish("已手动结束: 秒过 %d 站 + 并行扫抓到 %d 站 "
+                                     "+ 登录扫抓到 %d 站,已抓到的 Cookie 保留。"
+                                     % (st["n_instant"], st["n_para"],
+                                        st["n_login_got"]))
                     else:
-                        batch_finish("全自动完成: 秒过 %d 站 + 并行抓到 %d 站,"
-                                     "无需逐站登录。" % (st["n_instant"], st["n_para"]))
+                        batch_finish("全自动完成: 秒过 %d 站 + 并行扫抓到 %d 站 "
+                                     "+ 登录扫抓到 %d 站(另跳过 %d 站),"
+                                     "Cookie 已全部注入。"
+                                     % (st["n_instant"], st["n_para"],
+                                        st["n_login_got"],
+                                        st["n_login"] - st["n_login_got"]))
                 elif st["state"] == "launched":
                     auth_sess["phase"] = "launched"
-                    batch["last_act"] = time.time()      # 新站就绪: 倒计时从此起算
-                    batch["launched_t"] = time.time()
-                    batch["url_ok"] = False              # 页面到达目标站后才允许抓
                     warn = st.get("warn") or ""
                     if batch["active"]:
                         btn_fetch.config(text="抓取本站(%d/%d)"
@@ -1799,10 +1842,31 @@ class App:
                 now = time.time()
                 if now - batch["stat_t"] >= 1.0:
                     batch["stat_t"] = now
-                    _stat("并行抓取 %d/%d 站(%d 线程, 完成后进入下一阶段)…"
+                    _stat("并行扫 %d/%d 站(%d 标签, 完成后进入并行登录扫)…"
                           % (batch["para_done"], batch["para_total"],
-                             AUTO_PARA_TABS))
-            _auto_tick_checked()
+                             batch.get("k") or AUTO_PARA_TABS))
+            elif batch["active"] and batch.get("stage") == "login":
+                # 并行登录扫:进度 + 每个新标签开好的零点击提示(文案纠偏核心)
+                now = time.time()
+                if not batch.get("login_entered"):
+                    batch["login_entered"] = True
+                    btn_bpause.config(text="暂停自动")
+                    btn_bpause.pack(side="left", padx=4)   # 「跳过该站」在并行阶段无单站语义, 不出现
+                    ni, npar, nl = batch.get("login_info") or (0, 0, 0)
+                    self.log("并行扫完成: 秒过 %d 站 + 并行扫抓到 %d 站;"
+                             "剩余 %d 站进入并行登录扫(%d 标签)"
+                             % (ni, npar, nl, batch.get("k") or AUTO_PARA_TABS))
+                if not batch.get("paused") \
+                        and now - batch["stat_t"] >= 1.0:   # 暂停提示不被进度刷掉
+                    batch["stat_t"] = now
+                    hint = ("在浏览器里登录该站即可,无需点按钮 —— %ds 无操作"
+                            "自动抓取跳下一站(点击/输入会重置倒计时)"
+                            % batch.get("cur_idle", AUTO_IDLE_SECS))
+                    _stat("并行登录 %d/%d 站(%d 标签):已抓 %d · 已跳 %d | %s —— %s"
+                          % (batch["login_done"], batch["login_total"],
+                             batch.get("k") or AUTO_PARA_TABS,
+                             batch["login_got"], batch["login_skip"],
+                             batch.get("cur_host") or "", hint))
             poll_job[0] = win.after(150, poll_fetch)
 
         def on_fetch():
@@ -1870,19 +1934,21 @@ class App:
                 cdp_cookie.close(auth_sess["handle"])
             win.destroy()
 
-        # —— 批量抓取:选中源(默认全部)按站点去重,逐站访问;每站登录后点
-        # 「抓取本站」即保存 Cookie 并自动换下一站(浏览器与登录态跨站保持)。
-        # 自动模式(v1.6.4):页面内无操作满 AUTO_IDLE_SECS 秒自动抓取跳站,
-        # 用户在页面里点击/输入会重置倒计时(给登录留时间),全程零点击。 ——
+        # —— 批量抓取:选中源(默认全部)按站点去重。手动逐站:每站登录后点
+        # 「抓取本站」即保存并跳下一站(浏览器与登录态跨站保持)。
+        # 自动模式(v1.8.1):三段式全自动 —— Phase0 秒过 → Phase1 并行扫 →
+        # Phase2 并行登录扫(K 路标签池, 用户在页面里登录即零点击抓走),不再回串行。
         batch = {"active": False, "auto": False, "paused": False, "stage": "idle",
-                 "hosts": [], "targets": {}, "idx": -1, "idle": AUTO_IDLE_SECS,
-                 "last_act": 0.0, "last_url": "", "tick_t": 0.0, "stat_t": 0.0,
-                 "launched_t": 0.0, "url_ok": False, "para_done": 0,
-                 "para_total": 0}
+                 "hosts": [], "targets": {}, "idx": -1, "stat_t": 0.0,
+                 "para_done": 0, "para_total": 0, "k": AUTO_PARA_TABS,
+                 "stop_req": False, "login_entered": False, "login_info": (),
+                 "login_total": 0, "login_done": 0, "login_got": 0,
+                 "login_skip": 0, "cur_host": "", "cur_idle": AUTO_IDLE_SECS}
 
         def batch_finish(msg, color="#0066cc"):
             batch["active"] = False
             batch["stage"] = "idle"
+            batch["stop_req"] = False
             if auth_sess["handle"]:
                 cdp_cookie.close(auth_sess["handle"])
             auth_sess["handle"] = None
@@ -1891,8 +1957,9 @@ class App:
             btn_skip.pack_forget()
             btn_bstop.pack_forget()
             btn_bpause.pack_forget()
+            btn_bstop.config(state="normal")
+            btn_bauto.pack(side="left", padx=(4, 0))     # 自动为主按钮, 恢复时排前
             btn_bstart.pack(side="left", padx=4)
-            btn_bauto.pack(side="left")
             refresh_list()
             _stat(msg, color)
             self.log(msg)
@@ -1932,13 +1999,9 @@ class App:
                              % len(batch["hosts"]))
                 return
             host = batch["hosts"][batch["idx"]]
-            # 分级静默: 该站已配过 Cookie → 快档(刷新会话), 全新站 → 慢档(留登录时间)
-            urls_here = batch["targets"][host]
-            configured = any((self._auth.get(u) or {}).get("cookie") for u in urls_here)
-            batch["idle"] = AUTO_IDLE_FAST if configured else AUTO_IDLE_SECS
             btn_fetch.config(state="disabled")
-            _stat("批量 %d/%d: 正在打开 %s …(静默 %ss)"
-                  % (batch["idx"] + 1, len(batch["hosts"]), host, batch["idle"]))
+            _stat("批量 %d/%d: 正在打开 %s …(登录后点「抓取本站」)"
+                  % (batch["idx"] + 1, len(batch["hosts"]), host))
             _open_current()
 
         def batch_start(auto=False):
@@ -1992,36 +2055,36 @@ class App:
                 messagebox.showinfo("批量抓取", "选中的源没有有效网址。", parent=win)
                 return
             skip_note = "(已跳过 %d 个配过 Cookie 的站点)" % skipped if skipped else ""
+            k = _para_clamp(self.var_para_tabs.get())   # 并行标签数, 一次批量内固定
             if auto:
-                tip = ("全自动模式:%d 个站点%s —— 浏览器已有 Cookie 的站直接秒过,"
-                       "其余 %d 线程并行访问抓取;抓不到 Cookie 的站最后逐站处理"
-                       "(可在页面里登录)。确定开始?"
-                       % (len(batch["hosts"]), skip_note, AUTO_PARA_TABS))
+                tip = ("全自动模式:%d 个站点%s —— 三段式:① 浏览器已有 Cookie 的站"
+                       "直接秒过;② 其余 %d 路标签并行访问抓取;③ 仍没抓到的站进入"
+                       "并行登录扫,你在页面里登录即可,无需点按钮 —— 无操作满几秒"
+                       "自动抓取跳下一站。确定开始?"
+                       % (len(batch["hosts"]), skip_note, k))
             else:
-                tip = ("将依次访问 %d 个不同站点%s:每站登录后点「抓取本站」, "
-                       "Cookie 自动保存并跳下一站(已登录的站点无需重复登录)。"
-                       "确定开始?" % (len(batch["hosts"]), skip_note))
+                tip = ("手动逐站:将依次访问 %d 个不同站点%s,每站登录后点"
+                       "「抓取本站」,Cookie 自动保存并跳下一站(已登录的站点无需"
+                       "重复登录)。确定开始?" % (len(batch["hosts"]), skip_note))
             if not messagebox.askyesno("批量抓取", tip, parent=win):
                 return
             batch["active"] = True
             batch["auto"] = auto
             batch["paused"] = False
+            batch["stop_req"] = False
             batch["stage"] = "serial"
-            batch["last_act"] = 0.0
-            batch["last_url"] = ""
-            batch["tick_t"] = 0.0
+            batch["k"] = k
             btn_bstart.pack_forget()
             btn_bauto.pack_forget()
             btn_bstop.pack(side="left")
             if auto:
-                # 三段式: Phase0 秒过 → Phase1 并行扫 → Phase2 逐站登录。
-                # 全程在工作线程, 进度由 poll 轮询 batch["para_done"] 显示。
+                # 三段式: Phase0 秒过 → Phase1 并行扫 → Phase2 并行登录扫。
+                # 全程在工作线程, 进度由 poll 轮询 batch 计数显示。
                 batch["stage"] = "para"
                 batch["para_done"] = 0
                 batch["para_total"] = len(batch["hosts"])
-                self.log("自动批量: %d 个站点, 浏览器已有 Cookie 的先秒过,"
-                         "其余 %d 线程并行访问…" % (len(batch["hosts"]),
-                                                  AUTO_PARA_TABS))
+                self.log("自动批量: %d 个站点 —— 浏览器已有 Cookie 的先秒过,"
+                         "其余 %d 标签并行访问…" % (len(batch["hosts"]), k))
                 _stat("正在启动浏览器…")
 
                 def _auto_run():
@@ -2056,7 +2119,7 @@ class App:
                         batch["instant"] = len(instant)
                         batch["instant_sites"] = n_ins_sites
                         # —— Phase 1: 其余站点并行扫 ——
-                        results = _para_sweep(auth_sess["handle"], remaining) \
+                        results = _para_sweep(auth_sess["handle"], remaining, k) \
                             if remaining else {}
                         got = sum(1 for ck in results.values() if ck)
                         for h, ck in results.items():
@@ -2069,28 +2132,36 @@ class App:
                         if got:
                             save_auth_state(self._auth)
                             engine.set_auth(self._auth)
-                        # —— Phase 2: 没抓到的进入逐站登录模式 ——
-                        serial = [h for h in remaining if not results.get(h)]
-                        batch["hosts"] = serial
-                        batch["idx"] = -1
+                        # —— Phase 2: 仍没抓到的进入并行登录扫(标签池持续补位,
+                        #    跳过逻辑并入硬时限, 不再回串行) ——
+                        left = [h for h in remaining if not results.get(h)]
+                        n_login_got = 0
+                        if left and batch["active"]:
+                            batch["login_info"] = (len(instant), got, len(left))
+                            batch["stage"] = "login"   # poll 侧一次性入口(按钮/日志)
+                            batch["login_entered"] = False
+                            results2 = _login_sweep(auth_sess["handle"], left)
+                            n_login_got = sum(1 for ck in results2.values() if ck)
                         auth_sess["pending"] = {
-                            "state": "para_done",
+                            "state": "auto_done",
                             "n_instant": len(instant),
-                            "n_instant_sites": n_ins_sites,
-                            "n_para": got, "n_serial": len(serial)}
+                            "n_para": got, "n_login": len(left),
+                            "n_login_got": n_login_got,
+                            "stopped": bool(batch.get("stop_req"))
+                                       or not batch["active"]}
                     except Exception as e:
                         auth_sess["pending"] = {"state": "error", "msg": str(e)}
 
                 threading.Thread(target=_auto_run, daemon=True).start()
                 return
             btn_skip.pack(side="left", padx=4)
-            self.log("批量抓取开始(%s): %d 个站点(来源 %d 个书源)"
-                     % ("自动" if auto else "手动", len(batch["hosts"]), len(urls)))
+            self.log("批量抓取开始(手动逐站): %d 个站点(来源 %d 个书源)"
+                     % (len(batch["hosts"]), len(urls)))
             batch_next()
 
-        def _para_sweep(handle, hosts):
-            """Phase 1 并行扫:AUTO_PARA_TABS 个标签同时开, 每站加载+settle 后
-            按域取 Cookie 并关标签。返回 {host: cookie 字符串}(空串=没抓到)。"""
+        def _para_sweep(handle, hosts, k):
+            """Phase 1 并行扫:k 个标签同时开, 每站加载+settle 后按域取 Cookie
+            并关标签。返回 {host: cookie 字符串}(空串=没抓到)。"""
             results, lock = {}, threading.Lock()
 
             def one(h):
@@ -2105,8 +2176,7 @@ class App:
                     committed = False
                     while time.time() - t0 < 8 and batch["active"]:
                         ph = _url_host(cdp_cookie.tab_url(handle, tid))
-                        if ph and (ph == h or ph.endswith("." + h)
-                                   or h.endswith("." + ph)):
+                        if _host_match(ph, h):
                             committed = True
                             break
                         time.sleep(0.3)
@@ -2124,15 +2194,176 @@ class App:
                     results[h] = ck
                     batch["para_done"] += 1
 
-            with ThreadPoolExecutor(max_workers=AUTO_PARA_TABS) as ex:
+            with ThreadPoolExecutor(max_workers=max(1, k)) as ex:
                 list(ex.map(one, hosts))
+            return results
+
+        def _login_sweep(handle, hosts):
+            """Phase 2 并行登录扫:K 路标签池持续补位, 每标签独立监控(0.5s 一拍)。
+
+            到站(url 主机命中目标域)且该标签静默满 idle 秒(分级: 已配过 Cookie
+            1.5s / 全新站 5s)→ all_cookies 按域抓取保存(该站全部源),关标签补位;
+            没抓到也关标签补位;始终没到站超过硬时限 max(10s, 3×idle) → 跳过补位
+            (死站不再逐站干等)。用户在页面里登录(点击/输入/页面跳转)重置该标签
+            倒计时,静默期满自动抓走 —— 全程零点击。「暂停」冻结全部倒计时
+            (暂停时长顺延各标签时间戳),「结束批量」置 stop_req 后关池内标签收尾。
+            返回 {host: cookie}(空串=没抓到/跳过)。
+            """
+            k = max(1, int(batch.get("k") or AUTO_PARA_TABS))
+            results = {}
+            queue = list(hosts)
+            pool = []      # 池内标签:{tid, host, idle, arrived, opened_t, last_act, act_t}
+            batch["login_total"] = len(hosts)
+            batch["login_done"] = batch["login_got"] = batch["login_skip"] = 0
+            paused_at = None
+            try:
+                while (queue or pool) and batch["active"] \
+                        and not batch.get("stop_req"):
+                    now = time.time()
+                    if batch.get("paused"):
+                        paused_at = paused_at or now   # 冻结:不推进任何计时
+                        time.sleep(0.3)
+                        continue
+                    if paused_at is not None:          # 恢复:暂停时长顺延全部倒计时
+                        back = now - paused_at
+                        paused_at = None
+                        for s in pool:
+                            s["opened_t"] += back
+                            s["last_act"] += back
+                    # 补位:池有空位且队列有站 → 开下一个标签
+                    while len(pool) < k and queue and batch["active"] \
+                            and not batch.get("stop_req"):
+                        h = queue.pop(0)
+                        url = batch.get("login_map", {}).get(h) \
+                            or sorted(batch["targets"][h])[0]  # 有登录页先开登录页
+                        configured = any((self._auth.get(u) or {}).get("cookie")
+                                         for u in batch["targets"][h])
+                        idle = _para_idle(configured)
+                        try:
+                            tid = cdp_cookie.open_tab(handle, url)
+                        except Exception as e:
+                            self.log("并行登录: 打不开 %s(%s),已跳过" % (h, e))
+                            results[h] = ""
+                            batch["login_done"] += 1
+                            batch["login_skip"] += 1
+                            continue
+                        batch["cur_host"] = h          # 状态栏提示跟着新标签走
+                        batch["cur_idle"] = idle
+                        pool.append({"tid": tid, "host": h, "idle": idle,
+                                     "arrived": False, "opened_t": now,
+                                     "last_act": now, "act_t": 0.0})
+                    if not pool:
+                        time.sleep(0.3)
+                        continue
+                    time.sleep(0.5)                    # 监控一拍 0.5s
+                    try:
+                        tmap = cdp_cookie.tab_urls(handle)  # 一次取全部标签 URL
+                    except Exception:
+                        tmap = {}
+                    if not tmap:
+                        if not cdp_cookie.is_alive(handle):
+                            self.log("⚠ 并行登录: 抓取浏览器已关闭,剩余站点跳过。")
+                            for s in pool:
+                                results[s["host"]] = ""
+                                batch["login_done"] += 1
+                                batch["login_skip"] += 1
+                            pool = []
+                            for h in queue:
+                                results[h] = ""
+                                batch["login_done"] += 1
+                                batch["login_skip"] += 1
+                            queue = []
+                            break
+                        continue                       # 瞬时抖动: 下一拍重试
+                    now = time.time()
+                    for s in pool:                     # 到站判定
+                        ph = _url_host(tmap.get(s["tid"]) or "")
+                        if _host_match(ph, s["host"]):
+                            s["arrived"] = True
+                    # 活动检测节流:每标签最低 1.5s 一次, 一拍最多查 2 个(CDP 省调用)
+                    for s in sorted(pool, key=lambda x: x["act_t"])[:2]:
+                        if now - s["act_t"] < 1.5:
+                            break
+                        s["act_t"] = now
+                        try:
+                            ms = cdp_cookie.page_activity(handle, s["tid"])
+                        except Exception:
+                            ms = 0
+                        if ms and ms / 1000.0 > s["last_act"]:
+                            s["last_act"] = ms / 1000.0   # 页面内点击/输入 = 活动
+                    for s in list(pool):
+                        verdict = _tab_due(s["arrived"], s["idle"],
+                                           now - s["last_act"], now - s["opened_t"])
+                        if verdict != "wait" and now - s["act_t"] > 0.3:
+                            # 判定前补一次新鲜活动检测: 刚点击/输入过的标签不抢抓
+                            s["act_t"] = now
+                            try:
+                                ms = cdp_cookie.page_activity(handle, s["tid"])
+                            except Exception:
+                                ms = 0
+                            if ms and ms / 1000.0 > s["last_act"]:
+                                s["last_act"] = ms / 1000.0
+                            verdict = _tab_due(s["arrived"], s["idle"],
+                                               now - s["last_act"],
+                                               now - s["opened_t"])
+                        if verdict == "wait":
+                            continue
+                        ck = ""
+                        if verdict == "grab":
+                            try:
+                                allc = cdp_cookie.all_cookies(handle)
+                                ck = "; ".join(
+                                    "%s=%s" % (c["name"], c["value"])
+                                    for c in allc
+                                    if cdp_cookie._domain_matches(
+                                        s["host"], c.get("domain") or ""))
+                            except Exception:
+                                ck = ""
+                        cdp_cookie.close_tab(handle, s["tid"])
+                        pool.remove(s)
+                        batch["login_done"] += 1
+                        if ck:
+                            n = 0
+                            for u in batch["targets"][s["host"]]:
+                                cfg = dict(self._auth.get(u) or {})
+                                cfg["cookie"] = _merge_cookie_str(
+                                    cfg.get("cookie"), ck)
+                                self._auth[u] = cfg
+                                n += 1
+                            try:
+                                save_auth_state(self._auth)
+                                engine.set_auth(self._auth)
+                            except Exception:
+                                pass
+                            results[s["host"]] = ck
+                            batch["login_got"] += 1
+                            self.log("并行登录: 已保存 %s 的 Cookie(%d 个源)"
+                                     % (s["host"], n))
+                        else:
+                            results[s["host"]] = ""
+                            batch["login_skip"] += 1
+                            why = ("超时未到站(⚠ 页面不符或打不开),已跳过"
+                                   if verdict == "timeout"
+                                   else "未抓到 Cookie,已跳过")
+                            page = tmap.get(s["tid"]) or ""
+                            if verdict == "grab" and page:
+                                why += "(页面在 %s)" % page   # 便于诊断为何没抓到
+                            self.log("并行登录: %s %s" % (s["host"], why))
+            except Exception as e:                     # 任何异常不许带走整个批量
+                self.log("⚠ 并行登录扫异常(已收尾): %s" % e)
+                for s in pool:
+                    cdp_cookie.close_tab(handle, s["tid"])
+                    results.setdefault(s["host"], "")
+            for s in pool:                             # 收尾:关掉池内全部标签
+                cdp_cookie.close_tab(handle, s["tid"])
             return results
 
         def toggle_pause():
             batch["paused"] = not batch["paused"]
             btn_bpause.config(text="继续自动" if batch["paused"] else "暂停自动")
             if batch["paused"]:
-                _stat("已暂停自动跳转:点「抓取本站」手动抓,或再点「继续自动」。")
+                _stat("已暂停:全部标签倒计时已冻结(标签保持打开),"
+                      "点「继续自动」恢复。")
 
         def batch_grab():
             host = batch["hosts"][batch["idx"]]
@@ -2158,73 +2389,26 @@ class App:
 
             threading.Thread(target=_grab, daemon=True).start()
 
-        def _auto_tick_checked():
-            """兜底包装:_auto_tick 任何异常都不能杀死 poll 循环 —— 否则
-            pending 无人处理, 整个抓取流程界面假死, 用户看到的就是"自动化没了"。"""
-            try:
-                _auto_tick()
-            except Exception as e:
-                try:
-                    _stat("自动模式异常(已忽略): %s" % e, "#cc0000")
-                except Exception:
-                    pass
-
-        def _auto_tick():
-            """自动模式:页面无操作满 AUTO_IDLE_SECS 秒 → 抓取本站并跳下一站。"""
-            if not (batch["active"] and batch["auto"] and not batch["paused"]
-                    and batch.get("stage") == "serial"):
-                return
-            if auth_sess["phase"] != "launched":
-                return
-            now = time.time()
-            if now - batch["tick_t"] < 0.5:          # 节流 2Hz
-                return
-            batch["tick_t"] = now
-            handle = auth_sess["handle"]
-            pages = cdp_cookie.page_urls(handle)
-            url = next((p for p in pages if p.startswith("http")), "")
-            if url and url != batch["last_url"]:
-                batch["last_url"] = url
-                batch["last_act"] = now              # 页面跳转(含登录提交)= 活动
-            if not batch.get("url_ok"):
-                host = batch["hosts"][batch["idx"]]
-                for p in pages:
-                    ph = _url_host(p)
-                    if ph and (ph == host or ph.endswith("." + host)
-                               or host.endswith("." + ph)):
-                        batch["url_ok"] = True
-                        break
-            try:                                     # 活动检测失败不阻断推进
-                act_ms = cdp_cookie.page_activity(handle)
-            except Exception:
-                act_ms = 0
-            if act_ms and act_ms / 1000.0 > batch["last_act"]:
-                batch["last_act"] = act_ms / 1000.0  # 页面内点击/输入 = 活动
-            left = batch["idle"] - (now - batch["last_act"])
-            # 页面必须真的到达目标主机才抓(导航提交后 Set-Cookie 才落地);
-            # 死站/打不开的站等硬时限(max(10s, 3×静默))后放行跳过
-            hard = now - batch.get("launched_t", now) >= max(10.0, batch["idle"] * 3)
-            if left <= 0 and (batch.get("url_ok") or hard):
-                batch_grab()                         # 与手动抓取同一保存/跳转路径
-            elif now - batch["stat_t"] >= 1.0:
-                batch["stat_t"] = now
-                _stat("自动 %d/%d: %s —— %ds 后无操作自动跳下一站(%ss 档,"
-                      "在页面里点击/输入会重置倒计时)"
-                      % (batch["idx"] + 1, len(batch["hosts"]),
-                         batch["hosts"][batch["idx"]], int(left) + 1,
-                         batch["idle"]))
-
         def batch_skip():
-            if batch.get("stage") == "para":
-                _stat("并行扫进行中, 不支持单站跳过;可点「结束批量」。", "#cc0000")
+            if batch.get("stage") in ("para", "login"):
+                _stat("并行阶段进行中, 不支持单站跳过;超时的站会自动跳过,"
+                      "也可点「结束批量」。", "#cc0000")
                 return
             batch_next()
 
         def batch_stop():
+            if batch.get("stage") == "login":
+                # 并行登录扫:交给工作线程关池内标签后收尾, 已抓到的保留
+                batch["stop_req"] = True
+                btn_bstop.config(state="disabled")
+                _stat("正在收尾:关闭池内标签…")
+                return
             batch_finish("批量抓取已结束(已完成站点的 Cookie 保留)。")
 
         def on_fetch_click():
             if batch["active"]:
+                if batch.get("stage") in ("para", "login"):
+                    return                    # 自动并行阶段无单站抓取语义
                 if auth_sess["phase"] == "launched":
                     batch_grab()
                 return
@@ -2347,15 +2531,19 @@ class App:
         ttk.Button(btns, text="保存到所选", command=save_sel).pack(side="left")
         ttk.Button(btns, text="删除所选", command=del_sel).pack(side="left", padx=4)
         ttk.Button(btns, text="清空全部", command=clear_all).pack(side="left", padx=4)
-        btn_bstart = ttk.Button(btns, text="批量抓取",
+        # 批量按钮行:自动为主(先排), 手动逐站为次;并行标签数两段并行共用
+        btn_bauto = ttk.Button(btns, text="自动抓取",
+                               command=lambda: batch_start(True))
+        btn_bauto.pack(side="left", padx=(4, 0))
+        btn_bstart = ttk.Button(btns, text="手动逐站",
                                 command=lambda: batch_start(False))
         btn_bstart.pack(side="left", padx=4)
         var_skip_cfg = tk.BooleanVar(value=True)     # 重跑批量跳过已配站点
         ttk.Checkbutton(btns, text="跳过已配站",
                         variable=var_skip_cfg).pack(side="left", padx=(2, 0))
-        btn_bauto = ttk.Button(btns, text="自动抓取",
-                               command=lambda: batch_start(True))
-        btn_bauto.pack(side="left")
+        ttk.Label(btns, text="并行标签:").pack(side="left", padx=(8, 0))
+        ttk.Spinbox(btns, from_=2, to=20, width=4,
+                    textvariable=self.var_para_tabs).pack(side="left")
         btn_bpause = ttk.Button(btns, text="暂停自动", command=toggle_pause)
         btn_skip = ttk.Button(btns, text="跳过该站", command=batch_skip)
         btn_bstop = ttk.Button(btns, text="结束批量", command=batch_stop)
