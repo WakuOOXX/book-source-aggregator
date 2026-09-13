@@ -1,0 +1,522 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>小说下载器 · Fluent Win11 皮肤参考</title>
+<style>
+/* ==========================================================
+   07 · Windows 11 Fluent Design
+   Mica 质感 / 云母卡片 / 4·8px 圆角 / 细分隔线 / 亚克力浮层
+   Segoe UI 字体栈 / 淡雅蓝强调
+   ========================================================== */
+:root{
+  --mica-base:#eef2f7;
+  --mica-tint:rgba(255,255,255,.62);
+  --card:rgba(255,255,255,.72);
+  --card-solid:#f9fbfd;
+  --stroke:rgba(0,0,0,.078);
+  --stroke-strong:rgba(0,0,0,.14);
+  --divider:#e4e8ee;
+  --text:#1a1f26;
+  --text-2:#5a626e;
+  --text-3:#8b929e;
+  --accent:#0067c0;
+  --accent-hover:#1975c5;
+  --accent-light:#e6f1fa;
+  --red:#c42b1c;
+  --red-light:#fdf3f2;
+  --shadow-card:0 2px 4px rgba(0,0,0,.04), 0 1px 1px rgba(0,0,0,.03);
+  --shadow-flyout:0 8px 24px rgba(0,0,0,.14), 0 2px 6px rgba(0,0,0,.08);
+  --r4:4px; --r8:8px;
+}
+*{margin:0;padding:0;box-sizing:border-box;}
+body{
+  font-family:"Segoe UI Variable","Segoe UI","Microsoft YaHei UI","微软雅黑","PingFang SC",-apple-system,sans-serif;
+  color:var(--text);
+  font-size:13.5px;
+  line-height:1.6;
+  /* Mica 质感：柔和大块淡色渐变模拟云母透光 */
+  background:
+    radial-gradient(900px 480px at 8% -8%, rgba(0,120,212,.10), transparent 60%),
+    radial-gradient(800px 520px at 96% 4%, rgba(120,180,255,.13), transparent 55%),
+    radial-gradient(700px 500px at 50% 110%, rgba(160,200,255,.10), transparent 60%),
+    linear-gradient(160deg,#f2f5f9 0%, #e9eef5 50%, #eef1f6 100%);
+  min-height:100vh;
+  padding:32px 14px 64px;
+}
+::selection{background:#cfe3f5;}
+/* 滚动条：Win11 细型 */
+::-webkit-scrollbar{width:12px;height:12px;}
+::-webkit-scrollbar-track{background:transparent;}
+::-webkit-scrollbar-thumb{background:#c1c7d0;border:4px solid transparent;border-radius:8px;background-clip:content-box;}
+::-webkit-scrollbar-thumb:hover{background:#9aa1ac;background-clip:content-box;border:3px solid transparent;}
+
+.app{
+  max-width:1100px;margin:0 auto;
+  background:var(--mica-tint);
+  backdrop-filter:blur(30px) saturate(1.4);
+  border:1px solid var(--stroke-strong);
+  border-radius:var(--r8);
+  box-shadow:0 16px 48px rgba(20,40,80,.14), 0 1px 2px rgba(0,0,0,.05);
+  overflow:hidden;
+}
+/* 窗口标题栏 */
+.titlebar{
+  display:flex;align-items:center;height:44px;
+  padding-left:14px;
+  border-bottom:1px solid var(--divider);
+  background:rgba(255,255,255,.4);
+}
+.titlebar .ico{
+  width:18px;height:18px;border-radius:var(--r4);
+  background:linear-gradient(135deg,var(--accent),#7cb8e8);
+  margin-right:10px;
+}
+.titlebar .t{font-size:12.5px;color:var(--text-2);}
+.tb-btns{margin-left:auto;display:flex;height:100%;}
+.tb-btn{width:46px;display:flex;align-items:center;justify-content:center;color:var(--text-2);cursor:pointer;}
+.tb-btn:hover{background:rgba(0,0,0,.05);}
+.tb-btn.close:hover{background:var(--red);color:#fff;}
+.tb-btn svg{width:10px;height:10px;}
+
+.pad{padding:16px 20px;}
+/* 区块标题 */
+h2.sec{font-size:15px;font-weight:600;margin-bottom:10px;}
+h2.sec small{font-weight:400;color:var(--text-3);font-size:12px;margin-left:8px;}
+.row{display:flex;align-items:center;gap:8px;flex-wrap:wrap;}
+.divider{height:1px;background:var(--divider);margin:14px 0;}
+
+/* 控件 */
+.btn{
+  font:inherit;font-size:13px;
+  border:1px solid var(--stroke-strong);
+  border-bottom-color:rgba(0,0,0,.2);
+  background:var(--card-solid);
+  color:var(--text);
+  padding:5px 14px;border-radius:var(--r4);
+  cursor:pointer;white-space:nowrap;
+  box-shadow:var(--shadow-card);
+  transition:background .12s;
+}
+.btn:hover{background:#f2f5f9;color:var(--accent);}
+.btn:active{background:#e8ecf1;color:var(--text-2);transform:scale(.98);}
+.btn.primary{
+  background:var(--accent);border-color:rgba(0,0,0,.08);color:#fff;
+}
+.btn.primary:hover{background:var(--accent-hover);}
+.btn.subtle{background:transparent;border-color:transparent;box-shadow:none;}
+.btn.subtle:hover{background:rgba(0,0,0,.05);}
+.btn.danger{color:var(--red);}
+.btn.danger:hover{background:var(--red-light);}
+select,input[type=text],input[type=number]{
+  font:inherit;font-size:13px;
+  border:1px solid var(--stroke-strong);border-bottom-color:rgba(0,0,0,.28);
+  border-radius:var(--r4);
+  background:var(--card-solid);
+  padding:4px 10px;color:var(--text);outline:none;
+  transition:border-color .12s, background .12s;
+}
+select:hover,input:hover{background:#fff;}
+select:focus,input:focus{border-bottom:2px solid var(--accent);padding-bottom:3px;background:#fff;}
+select{appearance:none;padding-right:26px;
+  background-image:url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M1 1l4 4 4-4' stroke='%235a626e' fill='none' stroke-width='1.4'/%3E%3C/svg%3E");
+  background-repeat:no-repeat;background-position:right 9px center;}
+input[type=checkbox],input[type=radio]{accent-color:var(--accent);width:15px;height:15px;}
+.chk{display:inline-flex;align-items:center;gap:6px;cursor:pointer;user-select:none;}
+
+/* ① 书源管理 */
+.src-trigger{
+  display:inline-flex;align-items:center;justify-content:space-between;gap:12px;
+  min-width:280px;background:var(--card-solid);
+  border:1px solid var(--stroke-strong);border-radius:var(--r4);
+  padding:5px 10px;cursor:pointer;position:relative;
+}
+.src-trigger:hover{background:#fff;}
+.src-trigger .chev{color:var(--text-3);}
+.src-files-pop{
+  position:absolute;top:calc(100% + 4px);left:0;z-index:40;
+  min-width:340px;background:rgba(250,252,254,.92);
+  backdrop-filter:blur(24px) saturate(1.5);
+  border:1px solid var(--stroke-strong);border-radius:var(--r8);
+  box-shadow:var(--shadow-flyout);
+  padding:5px;
+}
+.src-files-pop .item{
+  display:flex;align-items:center;justify-content:space-between;gap:10px;
+  padding:7px 12px;border-radius:var(--r4);cursor:pointer;font-size:13px;
+}
+.src-files-pop .item:hover{background:rgba(0,0,0,.05);}
+.src-files-pop .meta{color:var(--text-3);font-size:12px;}
+.src-files-pop .x{
+  width:22px;height:22px;border-radius:var(--r4);
+  display:flex;align-items:center;justify-content:center;
+  color:var(--text-3);cursor:pointer;visibility:hidden;
+}
+.src-files-pop .item:hover .x{visibility:visible;}
+.src-files-pop .x:hover{background:var(--red-light);color:var(--red);}
+.src-files-pop .add{
+  border-top:1px solid var(--divider);margin-top:4px;padding-top:8px;
+  color:var(--accent);font-size:13px;
+}
+.status-ok{color:#0f7b3d;font-size:12.5px;}
+.status-ok b{color:#0a6b34;}
+.status-bad{color:var(--red);}
+
+/* ③ 结果表 */
+.table-card{
+  background:var(--card);
+  border:1px solid var(--stroke);border-radius:var(--r8);
+  box-shadow:var(--shadow-card);
+  overflow:hidden;
+}
+.table-scroll{max-height:300px;overflow-y:auto;}
+table{width:100%;border-collapse:collapse;font-size:13px;}
+thead th{
+  text-align:left;font-weight:600;color:var(--text-2);
+  background:rgba(243,246,250,.95);
+  padding:8px 14px;border-bottom:1px solid var(--divider);
+  position:sticky;top:0;z-index:2;
+}
+tbody td{padding:8px 14px;border-bottom:1px solid #f0f2f6;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+tbody tr{cursor:pointer;transition:background .1s;}
+tbody tr:hover{background:rgba(0,103,192,.05);}
+tbody tr:nth-child(even){background:rgba(0,0,0,.015);}
+/* 同书分组交替底色 */
+tr.g0{background:rgba(0,103,192,.045);}
+tr.g0:nth-child(even){background:rgba(0,103,192,.075);}
+tr.g1{background:rgba(255,255,255,.6);}
+tr.g1:nth-child(even){background:rgba(0,0,0,.02);}
+tr.selected{background:var(--accent-light) !important;box-shadow:inset 3px 0 0 var(--accent);}
+tr.banned td{color:var(--red);}
+tr.banned .srcname{color:var(--red);}
+.pill{font-size:11px;padding:1px 7px;border-radius:9px;background:#fde7e5;color:var(--red);margin-left:4px;}
+.pill.src{background:var(--accent-light);color:var(--accent);}
+.grp{font-weight:600;}
+.sub{color:var(--text-2);padding-left:18px;}
+.cat{color:var(--text-2);}
+.chap{color:var(--text-2);}
+
+/* ④ ⑤ 操作栏 */
+.ops-card{
+  background:var(--card);border:1px solid var(--stroke);border-radius:var(--r8);
+  padding:10px 14px;box-shadow:var(--shadow-card);
+  display:flex;align-items:center;gap:8px;flex-wrap:wrap;
+  justify-content:space-between;
+}
+.count{color:var(--text-2);}
+.count b{color:var(--accent);font-size:16px;font-weight:600;}
+.hint{color:var(--text-3);font-size:12px;}
+
+/* ⑥ 状态行 + 日志 */
+.statusbar{
+  display:flex;align-items:center;gap:14px;
+  background:var(--card-solid);border:1px solid var(--stroke);
+  border-radius:var(--r8);padding:8px 14px;box-shadow:var(--shadow-card);
+}
+.spinner{
+  width:14px;height:14px;border-radius:50%;
+  border:2px solid var(--accent-light);border-top-color:var(--accent);
+  animation:spin 1s linear infinite;
+}
+@keyframes spin{to{transform:rotate(360deg);}}
+.statusbar .clock{margin-left:auto;color:var(--text-3);font-variant-numeric:tabular-nums;}
+.log-card{
+  background:var(--card);border:1px solid var(--stroke);border-radius:var(--r8);
+  box-shadow:var(--shadow-card);overflow:hidden;
+}
+.log-head{
+  display:flex;align-items:center;padding:8px 14px;
+  border-bottom:1px solid var(--divider);font-weight:600;font-size:13px;
+}
+.log-head .lv{margin-left:auto;display:flex;gap:6px;font-weight:400;}
+.lv-tag{font-size:11px;padding:1px 8px;border-radius:9px;background:#eef1f5;color:var(--text-2);}
+.log-body{
+  height:170px;overflow-y:auto;padding:8px 14px;
+  font-size:12.5px;font-family:"Cascadia Mono",Consolas,monospace;
+}
+.log-body p{margin:2px 0;display:flex;gap:8px;}
+.log-body .t{color:var(--text-3);}
+.lv-i{color:var(--accent);}
+.lv-ok{color:#0f7b3d;}
+.lv-w{color:#9d5d00;}
+.lv-e{color:var(--red);}
+
+/* ⑦ 附加视图 */
+.section-note{
+  display:flex;align-items:center;gap:10px;margin:34px 0 14px;
+  color:var(--text-3);font-size:12px;
+}
+.section-note::before,.section-note::after{content:"";flex:1;height:1px;background:var(--divider);}
+/* 对话框：亚克力浮层 */
+.dialog{
+  max-width:600px;margin:0 auto 28px;
+  background:rgba(250,252,254,.88);
+  backdrop-filter:blur(32px) saturate(1.6);
+  border:1px solid var(--stroke-strong);border-radius:var(--r8);
+  box-shadow:var(--shadow-flyout);
+  overflow:hidden;
+}
+.dlg-head{
+  display:flex;justify-content:space-between;align-items:center;
+  padding:14px 20px 4px;font-size:16px;font-weight:600;
+}
+.dlg-head .x{width:28px;height:28px;border-radius:var(--r4);display:flex;align-items:center;justify-content:center;color:var(--text-3);cursor:pointer;}
+.dlg-head .x:hover{background:var(--red-light);color:var(--red);}
+.dlg-body{padding:8px 20px 6px;}
+.info-card{
+  background:rgba(255,255,255,.6);border:1px solid var(--stroke);
+  border-radius:var(--r4);padding:10px 14px;margin:8px 0;font-size:13px;color:var(--text-2);
+}
+.info-card b{color:var(--text);}
+.dlg-foot{
+  display:flex;justify-content:flex-end;gap:10px;
+  padding:14px 20px 18px;
+}
+/* 登录头管理 */
+.dialog.wide{max-width:880px;}
+.login-grid{display:grid;grid-template-columns:1.1fr 1fr;gap:16px;margin:12px 0 4px;}
+.list-box{
+  border:1px solid var(--stroke-strong);border-radius:var(--r4);
+  height:210px;overflow-y:auto;background:rgba(255,255,255,.7);
+}
+.list-box .li{display:flex;align-items:center;gap:8px;padding:6px 12px;cursor:pointer;font-size:13px;}
+.list-box .li:hover{background:rgba(0,0,0,.04);}
+.list-box .li.on{background:var(--accent-light);}
+.dot{width:7px;height:7px;border-radius:50%;background:var(--accent);flex:none;}
+.dot.off{background:#cfd4db;}
+.li .url{color:var(--text-3);font-size:12px;margin-left:auto;}
+textarea{
+  font:inherit;width:100%;height:66px;resize:vertical;
+  border:1px solid var(--stroke-strong);border-radius:var(--r4);
+  background:rgba(255,255,255,.8);padding:6px 10px;outline:none;font-family:Consolas,monospace;font-size:12.5px;
+}
+textarea:focus{border-bottom:2px solid var(--accent);}
+.batch-btns{display:flex;gap:8px;flex-wrap:wrap;border-top:1px solid var(--divider);padding-top:12px;margin-top:12px;}
+.scan-note{
+  margin-top:12px;display:flex;gap:10px;align-items:flex-start;
+  background:var(--accent-light);border:1px solid #cfe0f0;border-radius:var(--r4);
+  padding:10px 14px;color:#0b4d8c;font-size:12.5px;
+}
+.scan-note .i{font-weight:700;}
+.footer{color:var(--text-3);text-align:center;font-size:12px;padding:14px 0 6px;}
+@media (max-width:900px){.login-grid{grid-template-columns:1fr;}}
+</style>
+</head>
+<body>
+<div class="app">
+
+  <!-- 窗口标题栏装饰 -->
+  <div class="titlebar">
+    <span class="ico"></span>
+    <span class="t">小说下载器 · Legado书源 → TXT / EPUB</span>
+    <div class="tb-btns">
+      <div class="tb-btn"><svg viewBox="0 0 10 10"><path d="M0 5h10" stroke="currentColor" stroke-width="1"/></svg></div>
+      <div class="tb-btn"><svg viewBox="0 0 10 10"><rect x="0.5" y="0.5" width="9" height="9" fill="none" stroke="currentColor"/></svg></div>
+      <div class="tb-btn close"><svg viewBox="0 0 10 10"><path d="M0 0l10 10M10 0L0 10" stroke="currentColor" stroke-width="1"/></svg></div>
+    </div>
+  </div>
+
+  <div class="pad">
+
+    <!-- ① 书源管理 -->
+    <h2 class="sec">书源管理<small>共 3 个书源文件 · 1680 条</small></h2>
+    <div class="row">
+      <span style="color:var(--text-2)">书源文件(<b>3</b>):</span>
+      <div style="position:relative;display:inline-block;">
+        <div class="src-trigger">
+          <span>我的精选书源.json <span class="meta">(384条)</span></span>
+          <span class="chev">▾</span>
+        </div>
+        <!-- 亚克力下拉面板 -->
+        <div class="src-files-pop">
+          <div class="item"><span>我的精选书源.json <span class="meta">384 条</span></span><span class="x">✕</span></div>
+          <div class="item"><span>精品开源合集-2026.json <span class="meta">1200 条</span></span><span class="x">✕</span></div>
+          <div class="item"><span>破冰_第3版.json <span class="meta">96 条</span></span><span class="x">✕</span></div>
+          <div class="item add">+ 新加入书源…</div>
+        </div>
+      </div>
+      <button class="btn">打开目录</button>
+      <button class="btn">✔ 校验书源</button>
+      <button class="btn">🔬 深度校验</button>
+      <button class="btn">登录头</button>
+      <span class="status-ok">校验完成：<b>320</b> 可用 / <span class="status-bad">64</span> 失败 · 21:47</span>
+    </div>
+
+    <div class="divider"></div>
+
+    <!-- ② 搜索行 -->
+    <h2 class="sec">搜索<small>搜索域为「自动」时优先按书名匹配</small></h2>
+    <div class="row">
+      <span style="color:var(--text-2)">书源分组:</span>
+      <select><option>全部 (1680)</option><option>精品 (384)</option><option>正版 (211)</option></select>
+      <span style="color:var(--text-2)">搜索:</span>
+      <input type="text" value="诡秘之主" style="width:170px;">
+      <span style="color:var(--text-2)">搜索域</span>
+      <select><option>自动</option><option>书名</option><option>作者</option><option>分类</option></select>
+      <button class="btn primary">🔍 搜索</button>
+      <label class="chk"><input type="checkbox" checked> 模糊搜索</label>
+      <label class="chk"><input type="checkbox" checked> 只看相关结果</label>
+      <label class="chk"><input type="checkbox"> 只搜试搜通过源</label>
+      <button class="btn danger">停止</button>
+      <span style="margin-left:auto;color:var(--accent);font-size:12.5px;">已搜 214/384 源</span>
+    </div>
+
+    <div class="divider"></div>
+
+    <!-- ③ 结果表 -->
+    <h2 class="sec">搜索结果<small>同书自动分组 · 红色为被封书源</small></h2>
+    <div class="table-card">
+      <div class="table-scroll">
+        <table>
+          <thead><tr><th style="width:26%">书名</th><th style="width:12%">作者</th><th style="width:12%">分类</th><th style="width:34%">最新章节</th><th style="width:16%">书源</th></tr></thead>
+          <tbody>
+            <tr class="g0 selected"><td class="grp">【3源】诡秘之主</td><td>爱潜水的乌贼</td><td class="cat">玄幻</td><td class="chap">第1432章 新的征程（大结局）</td><td><span class="pill src">笔趣阁精品</span></td></tr>
+            <tr class="g0"><td class="sub">诡秘之主</td><td>爱潜水的乌贼</td><td class="cat">玄幻</td><td class="chap">第1432章 新的征程（大结局）</td><td>顶点小说网</td></tr>
+            <tr class="g0"><td class="sub">诡秘之主</td><td>爱潜水的乌贼</td><td class="cat">玄幻</td><td class="chap">第1431章 意外的访客</td><td>书趣阁</td></tr>
+            <tr class="g1"><td class="grp">【2源】庆余年</td><td>猫腻</td><td class="cat">历史</td><td class="chap">第746卷 尾声（全书完）</td><td>ABC小说网</td></tr>
+            <tr class="g1 banned"><td class="sub">庆余年</td><td>猫腻</td><td class="cat">历史</td><td class="chap">第746卷 尾声（全书完）</td><td><span class="srcname">某某文学</span><span class="pill">被封</span></td></tr>
+            <tr class="g0"><td class="grp">【2源】大奉打更人</td><td>卖报小郎君</td><td class="cat">仙侠</td><td class="chap">第1424章 海外仙山</td><td>笔趣阁精品</td></tr>
+            <tr class="g0"><td class="sub">大奉打更人</td><td>卖报小郎君</td><td class="cat">仙侠</td><td class="chap">第1423章 佛门旧地</td><td>红丸小说网</td></tr>
+            <tr class="g1"><td class="grp">【2源】夜的命名术</td><td>会说话的肘子</td><td class="cat">都市</td><td class="chap">第1290章 平行世界的黎明</td><td>顶点小说网</td></tr>
+            <tr class="g1"><td class="sub">夜的命名术</td><td>会说话的肘子</td><td class="cat">都市</td><td class="chap">第1289章 觉醒者协会</td><td>书趣阁</td></tr>
+            <tr class="g0 banned"><td class="grp">【1源】斗破苍穹</td><td>天蚕土豆</td><td class="cat">玄幻</td><td class="chap">第1623章 大结局</td><td><span class="srcname">某某文学</span><span class="pill">被封</span></td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="divider"></div>
+
+    <!-- ④ 选中操作栏 -->
+    <div class="ops-card">
+      <div class="row">
+        <button class="btn">全选</button>
+        <button class="btn">反选</button>
+        <button class="btn">清空选择</button>
+        <button class="btn subtle danger">清除缓存</button>
+        <span class="count">已选 <b>2</b> 本</span>
+      </div>
+      <span class="hint">单击单选 / Ctrl 增减 / 拖动框选 / 双击下载</span>
+    </div>
+
+    <div class="divider"></div>
+
+    <!-- ⑤ 下载栏 -->
+    <div class="ops-card">
+      <div class="row">
+        <button class="btn primary">⬇ 下载选中</button>
+        <label class="chk"><input type="radio" name="fmt" checked> EPUB</label>
+        <label class="chk"><input type="radio" name="fmt"> TXT</label>
+        <span style="color:var(--text-2);margin-left:6px;">保存到:</span>
+        <input type="text" value="E:\Books\Downloads\" style="flex:1;min-width:260px;">
+        <button class="btn">浏览…</button>
+        <button class="btn">打开目录</button>
+      </div>
+    </div>
+
+    <div class="divider"></div>
+
+    <!-- ⑥ 状态行 + 日志 -->
+    <div class="statusbar">
+      <span class="spinner"></span>
+      <span>正在下载 <b>诡秘之主</b> · 候选源 2/5 · 已用时 00:38</span>
+      <span class="clock">21:48:02</span>
+    </div>
+    <div class="log-card" style="margin-top:12px;">
+      <div class="log-head">运行日志
+        <span class="lv"><span class="lv-tag">全部</span><span class="lv-tag">校验</span><span class="lv-tag">搜索</span><span class="lv-tag">下载</span></span>
+      </div>
+      <div class="log-body">
+        <p><span class="t">21:46:03</span><span class="lv-i">[校验]</span><span>开始校验书源：共 384 条 …</span></p>
+        <p><span class="t">21:47:11</span><span class="lv-ok">[校验]</span><span>校验完成：320 可用 / 64 失败，耗时 68.2s</span></p>
+        <p><span class="t">21:47:26</span><span class="lv-i">[搜索]</span><span>关键词「诡秘之主」→ 命中 384 源，启动并发搜索</span></p>
+        <p><span class="t">21:48:02</span><span class="lv-w">[搜索]</span><span>源「某某文学」连接超时，已标记为被封 (HTTP 403)</span></p>
+        <p><span class="t">21:48:09</span><span class="lv-ok">[下载]</span><span>《庆余年》EPUB 生成完毕 (4.2 MB) → E:\Books\Downloads\</span></p>
+        <p><span class="t">21:48:15</span><span class="lv-ok">[下载]</span><span>正在抓取《诡秘之主》第 1/1432 章 · 源 2/5</span></p>
+      </div>
+    </div>
+
+    <!-- ⑦ 附加视图 -->
+    <div class="section-note">附 加 视 图 · 以下为静态模拟浮层（同页展示）</div>
+
+    <!-- 下载选项对话框 -->
+    <div class="dialog">
+      <div class="dlg-head">下载选项 <span class="x">✕</span></div>
+      <div class="dlg-body">
+        <div style="color:var(--text-2);margin-bottom:6px;">已选 <b style="color:var(--accent)">2</b> 本</div>
+        <div class="info-card"><b>下载单一：</b>按序探测候选源，被封源自动跳过，每本书输出一份完整文件。</div>
+        <div class="info-card"><b>合并下载：</b>同一本书的各个候选源各自独立成文件，便于比对章节完整度。</div>
+        <div class="row" style="margin:12px 0 4px;">
+          <span style="color:var(--text-2);width:72px;">下载方式:</span>
+          <label class="chk"><input type="radio" name="dlmode" checked> 下载单一</label>
+          <label class="chk"><input type="radio" name="dlmode"> 合并下载</label>
+        </div>
+        <div class="row" style="margin:8px 0 4px;">
+          <span style="color:var(--text-2);width:72px;">输出格式:</span>
+          <label class="chk"><input type="radio" name="fmt2" checked> EPUB</label>
+          <label class="chk"><input type="radio" name="fmt2"> TXT</label>
+        </div>
+      </div>
+      <div class="dlg-foot">
+        <button class="btn">取消</button>
+        <button class="btn primary">开始下载</button>
+      </div>
+    </div>
+
+    <!-- 登录头管理窗口 -->
+    <div class="dialog wide">
+      <div class="dlg-head">登录头管理 <span class="x">✕</span></div>
+      <div class="dlg-body">
+        <div class="row">
+          <input type="text" placeholder="过滤书源名或 URL…" style="flex:1;">
+          <button class="btn">全选</button>
+          <button class="btn">清空</button>
+        </div>
+        <div class="login-grid">
+          <div>
+            <div class="list-box">
+              <div class="li on"><span class="dot"></span>笔趣阁精品<span class="url">www.bqgjing.com</span></div>
+              <div class="li"><span class="dot"></span>顶点小说网<span class="url">www.dxsxbk.net</span></div>
+              <div class="li"><span class="dot off"></span>书趣阁<span class="url">www.shuquge.cc</span></div>
+              <div class="li on"><span class="dot"></span>ABC小说网<span class="url">abcbook.xyz</span></div>
+              <div class="li"><span class="dot off"></span>红丸小说网<span class="url">m.hongwan.org</span></div>
+              <div class="li"><span class="dot off"></span>某某文学<span class="url">www.xxwx.info</span></div>
+            </div>
+            <div class="row" style="margin-top:10px;justify-content:space-between;">
+              <label class="chk"><input type="checkbox"> 跳过已配站</label>
+              <span class="row" style="gap:6px;">并行标签 <input type="number" value="10" style="width:64px;"></span>
+            </div>
+          </div>
+          <div>
+            <div style="color:var(--text-2);margin-bottom:4px;">Cookie</div>
+            <textarea>uid=88231; token=9f2c8be1...; Hm_lvt=1726210000</textarea>
+            <div class="row" style="margin:8px 0 4px;">
+              <button class="btn primary">🌐 浏览器登录抓取</button>
+            </div>
+            <div style="color:var(--text-2);margin:8px 0 4px;">自定义 Header</div>
+            <input type="text" value="User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64)" style="width:100%;">
+          </div>
+        </div>
+        <div class="batch-btns">
+          <button class="btn">保存到所选</button>
+          <button class="btn danger">删除所选</button>
+          <button class="btn danger">清空全部</button>
+          <button class="btn">自动抓取</button>
+          <button class="btn">手动逐站</button>
+          <button class="btn subtle" style="margin-left:auto;">暂停自动</button>
+          <button class="btn subtle">跳过该站</button>
+          <button class="btn subtle danger">结束批量</button>
+        </div>
+        <div class="scan-note"><span class="i">ℹ</span><span>并行登录扫：在浏览器里登录该站即可，无需点按钮 —— 30s 无操作自动抓取跳下一站。</span></div>
+      </div>
+      <div class="dlg-foot">
+        <button class="btn">关闭</button>
+      </div>
+    </div>
+
+    <div class="footer">Fluent / Win11 Mica Skin · Static Reference · 07/10</div>
+  </div>
+</div>
+</body>
+</html>

@@ -4,23 +4,25 @@ import json
 import re
 import os
 import queue
-import subprocess
 import sys
 import threading
 import time
 import tkinter as tk
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from tkinter import ttk, filedialog, messagebox, simpledialog
 from pathlib import Path
 
 
-import cdp_cookie
 from selkit import TreeMultiSelect
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from legado import engine, export, fetcher, jsengine
-from legado.fetcher import DEFAULT_UA
+from legado import engine, jsengine   # export/fetcher 已随业务逻辑移入 core
 from legado.normalize import merge_hits, dedupe_hits, dedupe_sources
+import core
+from core import verify as core_verify
+from core import search as core_search
+from core import download as core_download
+from core import mem as core_mem
+from core import auth_manager as core_auth
 from selpolicy import (MIN_DRAG, DOUBLE_MS, apply_click, apply_range,
                        apply_rubber, restore_filter)
 
@@ -39,287 +41,25 @@ DEFAULT_SOURCE = SOURCE_DIR / "bookSource.json"
 DEFAULT_OUT = APP_DIR / "downloads"
 STATE_FILE = APP_DIR / "sel_state.json"    # 多选/选中项记忆 + 校验原始表路径(见 _mem_*)
 
-# ---------------------------------------------------------------- 并发度 -----
-# 搜索与校验:每个书源只发 1 个请求,3393 个源分布在 2107 个域名上,
-# 对单个站的压力不随总并发上升,所以可以开大。
-# 实测(2026-09-10,全量 3393 源、12 逻辑核,关键词「剑来」):
-#   并发  40 → 90.2s      并发 256 → 28.2 / 28.3s
-#   并发 384 → 18.3 / 20.4s   并发 512 → 18.7 / 42.1s(开始不稳)
-# CPU 全程只占 1~1.4/12 核 —— 瓶颈是"最慢单源最多等 12s"的超时尾巴,
-# 不是算力。384 是收益/稳定性的拐点,再加只会放大尾部波动。
-# 注意:小批量搜索(十几个到几百个源)提并发没有意义,因为总耗时会撞上
-# 12s 超时下界:实测 240 个源在并发 40~600 之间都是 12s 左右。
-SEARCH_WORKERS = 384
-VERIFY_WORKERS = 384
-# 校验搜索兜底:这些失效原因的源值得用真实搜索规则复测(首页被 WAF 拦/超时
-# ≠ 源不可用,起点 202、69书吧 403 这类首页拦爬虫但搜索接口正常的源很多)。
-SEARCH_FALLBACK_REASONS = {"timeout", "http_403", "http_429", "http_503"}
-# 批量自动抓取:站点内无鼠标/键盘操作满该秒数 → 自动抓取并跳下一站;
-# 用户在页面里点击/输入(CDP 注入监听)会重置倒计时,给登录留时间。
-AUTO_IDLE_SECS = 5
-AUTO_IDLE_FAST = 1.5    # 已配过 Cookie 的站刷新会话用快档
-AUTO_PARA_TABS = 10     # 并行扫/并行登录扫的标签数默认值(「登录头」窗口「并行标签」可调 2~20)
-AUTO_PARA_SETTLE = 8.0  # 并行扫: 页面提交后再等的秒数(Set-Cookie 落地)
-# 正文下载是另一回事:同一本书的章节全来自同一个站,并发越高越容易触发限流/封禁,
-# 所以刻意压低,不要跟着搜索一起调大。
-DOWNLOAD_WORKERS = 10
-
-# 书源校验的请求头统一走 engine.source_headers(书源 header + 用户登录头/Cookie,
-# UA 缺省 DEFAULT_UA)—— 旧版独立 VERIFY_UA(Chrome/114 Edg/114)已被 WAF 大量
-# 拦截,且连书源自带 header 都不传,是误判失效的元凶之一(2026-09-12 v1.5.5/5.6)。
-
-# 深度校验(v1.8.0):活性探测之后对每个活源追加"试搜 + 分类探测"两步真实
-# 业务探测。试搜关键词与搜索兜底救援一致;每源至多 2 个额外请求(试搜 1 +
-# 分类 1),并发沿用 VERIFY_WORKERS。
-DEEP_KEYWORD = "我的"
+# —— 业务常量与运行目录:已剥离至 core/config.py(逻辑/UI 分离批次 1)——
+from core.config import (APP_DIR, SOURCE_DIR, DEFAULT_SOURCE, DEFAULT_OUT,
+                         STATE_FILE, SEARCH_WORKERS, VERIFY_WORKERS,
+                         SEARCH_FALLBACK_REASONS, AUTO_IDLE_SECS,
+                         AUTO_IDLE_FAST, AUTO_PARA_TABS, AUTO_PARA_SETTLE,
+                         DOWNLOAD_WORKERS, DEEP_KEYWORD,
+                         VERIFY_ARTIFACT_SUFFIXES)
 
 
-def good_table_path(origin: Path) -> Path:
-    """原始全量表对应的有效书源表:<原名>.good.json(与 verify_sources.py 输出一致)。"""
-    name = origin.name
-    if name.lower().endswith(".json"):
-        return origin.with_name(name[:-5] + ".good.json")
-    return origin.with_name(origin.stem + ".good.json")
-
-
-def deep_table_path(origin: Path) -> Path:
-    """原始全量表对应的深度校验产物:<原名>.deep.json(v1.8.0)。"""
-    name = origin.name
-    if name.lower().endswith(".json"):
-        return origin.with_name(name[:-5] + ".deep.json")
-    return origin.with_name(origin.stem + ".deep.json")
-
-
-def deep_classify(search_err, n_hits, explore_err, n_items):
-    """深度校验判定(纯函数,便于单测):
-    → (search_verdict, explore_verdict, level)。
-
-    search_verdict: ok(≥1 命中)/ no_result(HTTP 成功但书列表空)/
-      error(网络/HTTP 失败)/ no_search(无法试搜,不判死)。
-    explore_verdict: ok / no_result / error / none(无分类能力)/
-      untested(中断未测)。
-    level(质量等级): 试搜 ok → 分类 ok=完整可用,其余=可搜(分类死≠源
-      不可用,只作附加字段);试搜空转→搜索空转;试搜失败→试搜失败;
-      无法试搜→无法试搜。"""
-    if search_err == "no_search":
-        sv = "no_search"
-    elif search_err:
-        sv = "error"
-    elif n_hits >= 1:
-        sv = "ok"
-    else:
-        sv = "no_result"
-    if explore_err == "none":
-        ev = "none"
-    elif explore_err is None:                    # 中断未测到分类阶段
-        ev = "untested"
-    elif explore_err:
-        ev = "error"
-    elif n_items >= 1:
-        ev = "ok"
-    else:
-        ev = "no_result"
-    if sv == "ok":
-        level = "完整可用" if ev == "ok" else "可搜"
-    elif sv == "no_result":
-        level = "搜索空转"
-    elif sv == "error":
-        level = "试搜失败"
-    else:
-        level = "无法试搜"
-    return sv, ev, level
-
-
-def write_deep_table(origin: Path, fn, rows, keyword, interrupted=False):
-    """写深度校验产物 <原名>.deep.json(原子写,与 error.json 同风格)。
-
-    rows 每项 = {"name","url","level","search":{verdict,hits,ms,reason},
-    "explore":{verdict,items,ms,reason}}。与 good 表"停止不写"不同,
-    深度结果是分析产物,中断时已测源的结果照常落盘(_meta.interrupted=true)。
-    返回 _meta 计数 dict(供日志摘要)。"""
-    counts = {"alive": len(rows), "search_ok": 0, "search_no_result": 0,
-              "search_error": 0, "no_search": 0,
-              "explore_ok": 0, "explore_no_result": 0, "explore_error": 0}
-    for r in rows:
-        sv = (r.get("search") or {}).get("verdict")
-        if sv == "ok":
-            counts["search_ok"] += 1
-        elif sv == "no_result":
-            counts["search_no_result"] += 1
-        elif sv == "error":
-            counts["search_error"] += 1
-        elif sv == "no_search":
-            counts["no_search"] += 1
-        ev = (r.get("explore") or {}).get("verdict")
-        if ev == "ok":
-            counts["explore_ok"] += 1
-        elif ev == "no_result":
-            counts["explore_no_result"] += 1
-        elif ev == "error":
-            counts["explore_error"] += 1
-    meta = {"generated_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
-            "source_file": fn, "keyword": keyword,
-            "interrupted": bool(interrupted)}
-    meta.update(counts)
-    table = {"_meta": meta, "results": rows}
-    out = deep_table_path(origin)
-    tmp = out.with_name(out.name + ".tmp")
-    tmp.write_text(json.dumps(table, ensure_ascii=False, indent=2),
-                   encoding="utf-8")
-    os.replace(tmp, out)
-    return counts
-
-
-def _fmt_deep_summary(counts: dict) -> str:
-    """深度校验分布 → 一行中文日志(试搜 + 分类)。分类分母 = 实测分类的源数
-    (无分类能力的源不计)。"""
-    tested = (counts.get("explore_ok", 0) + counts.get("explore_no_result", 0)
-              + counts.get("explore_error", 0))
-    return ("试搜:可搜 %d · 空转 %d · 失败 %d · 无法试搜 %d;"
-            "分类:可用 %d / %d"
-            % (counts.get("search_ok", 0), counts.get("search_no_result", 0),
-               counts.get("search_error", 0), counts.get("no_search", 0),
-               counts.get("explore_ok", 0), tested))
-
-
-def _fmt_reason_summary(summary: dict) -> str:
-    """失效原因分布 → 一行中文日志,按数量降序。"""
-    zh = {"connect": "连不上", "timeout": "超时", "invalid_url": "无URL"}
-    return " · ".join("%s %d" % (zh.get(k, k), v) for k, v in
-                      sorted(summary.items(), key=lambda kv: -kv[1]))
-
-
-def _pick_login_url(source):
-    """选择"浏览器登录抓取"的打开目标:优先源 loginUrl(纯网址),回退站点 URL。
-
-    返回 (open_url, grab_host):open_url 是要在浏览器里打开并登录的页面,
-    grab_host 是 Cookie 抓取过滤用的主机名 —— 永远取 bookSourceUrl 的主机,
-    这样登录页(passport 等子域)设置的域级 Cookie 也能被匹配进来。
-    返回 (None, None) 表示该源没有可用网址。
-    """
-    if not source:
-        return None, None
-    base = (source.get("bookSourceUrl") or "").strip()
-    if "://" not in base:
-        base = "https://" + base
-    grab_host = _url_host(base)
-    if not grab_host:
-        return None, None
-    lu = (source.get("loginUrl") or "").strip()
-    if lu.startswith(("http://", "https://")) and not re.search(
-            r"<js>|@js:", lu, re.I):
-        return lu, grab_host
-    return base, grab_host
-
-
-def _url_host(url):
-    """取 URL 主机名(小写);解析失败返回空串。"""
-    try:
-        from urllib.parse import urlsplit
-        return (urlsplit(url).hostname or "").lower()
-    except Exception:
-        return ""
-
-
-def _merge_cookie_str(old, new):
-    """按键合并两段 Cookie 头;new 里的同名键覆盖 old,old 独有的键保留。
-
-    浏览器被强杀时内存 Cookie 可能没落盘 —— 直接整体覆盖会让新抓取
-    反而丢掉旧键, 所以抓取结果一律按名合并。
-    """
-    d = {}
-    for part in (old or "").split(";"):
-        if "=" in part:
-            k, v = part.split("=", 1)
-            d[k.strip()] = v.strip()
-    for part in (new or "").split(";"):
-        if "=" in part:
-            k, v = part.split("=", 1)
-            d[k.strip()] = v.strip()
-    return "; ".join("%s=%s" % (k, v) for k, v in d.items() if k)
-
-
-def _host_match(ph, host):
-    """页面主机名是否命中目标域(相等或互为子域)—— 到站判定,与 cdp_cookie 口径一致。"""
-    return bool(ph) and (ph == host or ph.endswith("." + host)
-                         or host.endswith("." + ph))
-
-
-def _para_idle(configured):
-    """并行登录扫分级静默:该站已配过 Cookie 用快档(刷新会话),全新站慢档(留登录时间)。"""
-    return AUTO_IDLE_FAST if configured else AUTO_IDLE_SECS
-
-
-def _para_clamp(v, default=AUTO_PARA_TABS):
-    """「并行标签」取值清洗:非法输入回退 default,越界收敛到 2~20。"""
-    try:
-        n = int(str(v).strip())
-    except Exception:
-        return default
-    return 2 if n < 2 else (20 if n > 20 else n)
-
-
-def _tab_due(arrived, idle, since_act, opened_for):
-    """并行登录扫单标签判定(纯函数):返回 "grab" / "timeout" / "wait"。
-
-    - 已到站且静默满 idle 秒 → grab(抓完即关,没抓到也关);
-    - 未到站且打开超过硬时限 max(10, 3×idle) → timeout(死站不再干等);
-    - 其余(含已到站但用户仍在操作,静默未满)→ wait,保护登录中的标签。
-    """
-    if arrived and since_act >= idle:
-        return "grab"
-    if not arrived and opened_for >= max(10.0, idle * 3):
-        return "timeout"
-    return "wait"
-
-
-def auth_state_path() -> Path:
-    """每源登录头存储:shuyuan/auth_state.json。
-
-    属用户凭据,**不属于缓存** —— 「清除缓存」不清理,只能在新加的
-    「登录头」管理窗口里查看/修改/清空。写入与 good 表同款原子写。
-    """
-    return SOURCE_DIR / "auth_state.json"
-
-
-def load_auth_state() -> dict:
-    """读登录头表 {bookSourceUrl: {"cookie": str, "header": dict}};损坏按空表。"""
-    try:
-        data = json.loads(auth_state_path().read_text(encoding="utf-8"))
-        return data if isinstance(data, dict) else {}
-    except Exception:
-        return {}
-
-
-def save_auth_state(auth: dict) -> None:
-    p = auth_state_path()
-    tmp = p.with_name(p.name + ".tmp")
-    tmp.write_text(json.dumps(auth, ensure_ascii=False, indent=2), encoding="utf-8")
-    os.replace(tmp, p)
-
-
-VERIFY_ARTIFACT_SUFFIXES = (".good.json", ".error.json", ".deep.json")   # 校验产物后缀 = 可再生缓存
-
-
-def is_verify_artifact(name) -> bool:
-    """校验产物判定:*.good.json / *.error.json / *.deep.json。
-
-    它们是「校验书源」跑出来的缓存(有效表/失效表/深度校验结果),可由原始
-    表重新生成,既不能当书源输入(否则"产物再校验"形成滚雪球),也不属于
-    用户配置。
-    """
-    return str(name).lower().endswith(VERIFY_ARTIFACT_SUFFIXES)
-
-
-def scan_verify_artifacts():
-    """shuyuan/ 下现存的全部校验产物(含无主的孤儿产物),按文件名排序。"""
-    try:
-        if SOURCE_DIR.exists():
-            return [p for p in sorted(SOURCE_DIR.iterdir())
-                    if p.is_file() and is_verify_artifact(p.name)]
-    except Exception:
-        pass
-    return []
+# —— 纯逻辑函数(产物路径/深度分级/格式化/auth_state/并行登录扫辅助):
+# 已剥离至 core/artifacts.py,此处 re-export 保证旧引用(测试/脚本)不断 ——
+from core.artifacts import (good_table_path, deep_table_path, deep_classify,
+                            write_deep_table, _fmt_deep_summary,
+                            _fmt_reason_summary, _pick_login_url, _url_host,
+                            _merge_cookie_str, _host_match, _para_idle,
+                            _para_clamp, _tab_due, auth_state_path,
+                            load_auth_state, save_auth_state,
+                            is_verify_artifact, scan_verify_artifacts,
+                            cleanup_verify_artifacts as core_art_cleanup)
 
 
 class DownloadDialog:
@@ -412,7 +152,7 @@ class App:
         self._last_key = ""
         # —— 每源登录头(用户凭据):读盘并注入引擎,校验/搜索/详情/目录/正文全链路生效 ——
         self._auth = load_auth_state()
-        engine.set_auth(self._auth)
+        core.set_auth(self._auth)
         # —— 运行记忆:先读盘,勾选/取消/选项都持久,重启原样恢复(见 _mem_*)——
         mem = self._mem_load()
         self.verify_origin = mem.get("verify_origin") or ""
@@ -711,16 +451,8 @@ class App:
 
     def _cleanup_verify_artifacts(self, fn, origin):
         """删除指定书源文件的校验产物(.good.json / .error.json / .deep.json)
-        并清除验证记录。"""
-        for suffix in VERIFY_ARTIFACT_SUFFIXES:
-            p = SOURCE_DIR / fn if isinstance(origin, str) else origin
-            target = p.with_name(p.stem + suffix)
-            if target.exists():
-                try:
-                    target.unlink()
-                    self.log("已清理: %s" % target.name)
-                except Exception as e:
-                    self.log("⚠ 清理 %s 失败: %s" % (target.name, e))
+        并清除验证记录(清理逻辑在 core.artifacts,UI 只接日志与记录)。"""
+        core_art_cleanup(fn, origin, log=self.log)
         self.verify_dones.pop(fn, None)
 
     def _remove_source_file(self, fn):
@@ -892,71 +624,7 @@ class App:
     # 停止 = 当前文件中止 + 后续不再开始(已完成的产物保留)。
     # 判定:并发 GET bookSourceUrl,status < 400 即有效(202/301 等也算活;
     # 失败重试一次再定生死。旧版"200 独裁 + 5s 超时 + 老 UA"曾把约六成活源误判失效。
-    def _check_one(self, s):
-        """探测单源,返回 (reason, status, elapsed_ms)。
-
-        reason ∈ ok / timeout / connect(连不上、DNS 死)/ http_<code> / invalid_url;
-        status 为最后一次 HTTP 状态码(非 HTTP 失败为 None);elapsed_ms 含重试的
-        总耗时(回写 respondTime 供搜索排序);中止返回 None。
-        """
-        if self.stop_verify.is_set():
-            return None                                          # None = 中止未检测
-        url = (s.get("bookSourceUrl") or "").strip()
-        if not url:
-            return ("invalid_url", None, 0)
-        t0 = time.time()
-        reason, status = ("connect", None)
-        for _attempt in (0, 1):                                  # 失败重试一次
-            if self.stop_verify.is_set():
-                return None
-            try:
-                hd = engine.source_headers(s)                    # 含用户登录头/Cookie
-                r = fetcher.request("GET", url, headers=hd, timeout=12,
-                                    verify=False, allow_redirects=True)
-                if r.status_code < 400:
-                    return ("ok", r.status_code, int((time.time() - t0) * 1000))
-                reason, status = ("http_%d" % r.status_code, r.status_code)
-            except fetcher.TIMEOUT_EXCS:
-                reason, status = ("timeout", None)
-            except Exception:
-                reason, status = ("connect", None)
-        return (reason, status, int((time.time() - t0) * 1000))
-
-    @staticmethod
-    def _write_error_table(origin, fn, srcs, results, rescued=0):
-        """写机器可读失效记录 <原名>.error.json,返回原因分布 dict。
-
-        面向 agent/脚本解析:_meta.reason_summary 一眼拿到失效原因分布,
-        failures 逐源记录 name/url/reason/status。后缀已在 VERIFY_ARTIFACT_SUFFIXES
-        中,「清除缓存」与重校验前的清理会把它当可再生缓存带走。
-        """
-        fails, summary = [], {}
-        n_untested = 0
-        for s, r in zip(srcs, results):
-            if r is None:                                        # 中止未检测,不计入
-                n_untested += 1
-                continue
-            if r[0] == "ok":
-                continue
-            reason, status = r[0], r[1]
-            summary[reason] = summary.get(reason, 0) + 1
-            fails.append({"source_name": (s.get("bookSourceName") or "").strip(),
-                          "url": (s.get("bookSourceUrl") or "").strip(),
-                          "reason": reason, "status": status,
-                          "elapsed_ms": r[2] if len(r) > 2 else None})
-        table = {"_meta": {"generated_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
-                           "source_file": fn, "total": len(srcs),
-                           "ok": len(srcs) - len(fails) - n_untested,
-                           "failed": len(fails), "untested": n_untested,
-                           "rescued_by_search": rescued,
-                           "reason_summary": summary},
-                 "failures": fails}
-        out = origin.with_name(origin.stem + ".error.json")
-        tmp = out.with_name(out.name + ".tmp")
-        tmp.write_text(json.dumps(table, ensure_ascii=False, indent=2),
-                       encoding="utf-8")
-        os.replace(tmp, out)
-        return summary
+    # —— 校验/深度校验编排已剥离至 core/verify.py(verify_run),UI 只组装参数。
 
     def _collect_verify_files(self):
         """收集勾选且存在的原始表(校验/深度校验共用)。"""
@@ -992,7 +660,8 @@ class App:
         self.log("开始校验 %d 个书源文件(并发 %d · 超时 12s · status<400 · 重试 1 次)…"
                  % (n_files, VERIFY_WORKERS))
         self.lbl_verify.config(text="校验中 · 文件 0/%d" % n_files)
-        threading.Thread(target=self._do_verify, args=(files,), daemon=True).start()
+        threading.Thread(target=self._run_verify, args=(files, False),
+                         daemon=True).start()
 
     def start_deep_verify(self):
         """深度校验入口:活性校验(复用 _do_verify 全套逻辑)→ 对活源试搜 +
@@ -1010,257 +679,27 @@ class App:
                  "(并发 %d · 每源至多 2 个额外请求)…"
                  % (n_files, DEEP_KEYWORD, VERIFY_WORKERS))
         self.lbl_verify.config(text="深度校验 · 文件 0/%d" % n_files)
-        threading.Thread(target=self._do_verify, args=(files, True),
+        threading.Thread(target=self._run_verify, args=(files, True),
                          daemon=True).start()
 
-    def _do_verify(self, files, deep=False):
-        """逐文件校验循环。files = [(filename, Path), ...]
+    def _run_verify(self, files, deep=False):
+        """校验/深度校验线程入口:组装注入参数调 core.verify.verify_run。"""
+        core_verify.verify_run(files, emit=self._report, stop=self.stop_verify,
+                               deep=deep,
+                               reload_files=list(self.checked_files))
 
-        deep=True(v1.8.0 深度校验):活性校验照旧跑完全套(good/error 表
-        语义不变),之后对每个活性通过的源追加试搜 + 分类探测,写
-        <原名>.deep.json。全部失效的文件不进入深度阶段。
-        """
-        t_total = time.time()
-        n_files = len(files)
-        tot_ok, tot_bad = 0, 0
-        aborted = False
-        for fi, (fn, origin) in enumerate(files):
-            if self.stop_verify.is_set():
-                aborted = True
-                break
-            self.q.put(("vfile", (fi + 1, n_files, fn)))
-            try:
-                srcs = engine.load_sources(str(origin))
-            except Exception as e:
-                self.q.put(("log", "✘ 文件 %s 读取失败,跳过: %s" % (fn, e)))
-                continue
-            if not srcs:
-                self.q.put(("log", "⚠ 文件 %s 无书源,跳过。" % fn))
-                continue
-            t0 = time.time()
-            results, done = [], 0
-            pool = ThreadPoolExecutor(max_workers=VERIFY_WORKERS)
-            try:
-                for r in pool.map(self._check_one, srcs):
-                    results.append(r)
-                    done += 1
-                    if done % 25 == 0 or done == len(srcs):
-                        n_ok = sum(1 for x in results if x and x[0] == "ok")
-                        n_bad = sum(1 for x in results if x and x[0] != "ok")
-                        self.q.put(("vprog", (fi + 1, n_files, fn,
-                                              done, len(srcs), n_ok, n_bad)))
-            except Exception as e:
-                self.q.put(("log", "校验异常(%s): %s" % (fn, e)))
-            finally:
-                pool.shutdown(wait=False)
-            n_bad = sum(1 for x in results if x and x[0] != "ok")
-            n_ok = sum(1 for x in results if x and x[0] == "ok")
-            n_untested = sum(1 for x in results if x is None)
-            elapsed = time.time() - t0
-            tot_ok += n_ok
-            tot_bad += n_bad
-            table = good_table_path(origin)
-            if n_untested:
-                self.q.put(("log", "文件 %s 校验中止(未检测 %d 个)" % (fn, n_untested)))
-                aborted = True
-                break
-            # 搜索兜底救援:403/超时类源用真实搜索规则复测,搜到书即改判有效。
-            n_rescued = 0
-            if not self.stop_verify.is_set():
-                cands = [s for s, r in zip(srcs, results)
-                         if r and r[0] in SEARCH_FALLBACK_REASONS]
-                if cands:
-                    self.q.put(("log", "搜索兜底: 对 %d 个 403/超时类源用真实搜索规则复测…"
-                                % len(cands)))
-                    rescued = set()
-
-                    def _on_hit(h, _rescued=rescued):
-                        _rescued.add(((h.get("source") or {}).get("bookSourceUrl")
-                                      or "").strip())
-
-                    try:
-                        engine.search_sources(cands, DEEP_KEYWORD, workers=VERIFY_WORKERS,
-                                              stop=self.stop_verify, on_hit=_on_hit)
-                    except Exception as e:
-                        self.q.put(("log", "搜索兜底异常: %s" % e))
-                    for i, (s, r) in enumerate(zip(srcs, results)):
-                        if (r and r[0] in SEARCH_FALLBACK_REASONS
-                                and (s.get("bookSourceUrl") or "").strip() in rescued):
-                            results[i] = ("ok", None)
-                            n_rescued += 1
-                    if n_rescued:
-                        n_ok = sum(1 for x in results if x and x[0] == "ok")
-                        n_bad = sum(1 for x in results if x and x[0] != "ok")
-                        self.q.put(("log", "搜索兜底救回 %d 个(文件 %s)"
-                                    % (n_rescued, fn)))
-            if n_ok == 0:
-                # 断网保护:全部失效时清掉旧产物,避免 offline 全灭被缓存成"没有可用源"。
-                self._cleanup_verify_artifacts(fn, origin)
-                self.q.put(("log", "⚠ 文件 %s 全部 %d 个源失效(耗时 %.0fs),已清理旧有效表。"
-                                    % (fn, n_bad, elapsed)))
-            # 机器可读的失效记录(含原因分布)落盘,供 agent/脚本读取分析;
-            # 全失效分支上面刚清过旧产物,这里写的是本次的新记录。
-            try:
-                summary = self._write_error_table(origin, fn, srcs, results,
-                                                  rescued=n_rescued)
-                if summary:
-                    self.q.put(("log", "失效原因(%s): %s"
-                                % (fn, _fmt_reason_summary(summary))))
-            except Exception as e:
-                self.q.put(("log", "✘ %s 失效记录写入失败: %s" % (fn, e)))
-            if n_ok == 0:
-                continue
-            seen, good = set(), []
-            for s, r in zip(srcs, results):
-                if r and r[0] == "ok":
-                    u = (s.get("bookSourceUrl") or "").strip()
-                    if u not in seen:
-                        seen.add(u)
-                        g = dict(s)
-                        if len(r) > 2 and r[2]:              # 响应耗时回写(Legado 同名字段)
-                            g["respondTime"] = r[2]
-                        good.append(g)
-            try:
-                tmp = table.with_name(table.name + ".tmp")
-                tmp.write_text(json.dumps(good, ensure_ascii=False, indent=2),
-                               encoding="utf-8")
-                os.replace(tmp, table)
-            except Exception as e:
-                self.q.put(("log", "✘ %s 有效表写入失败: %s" % (fn, e)))
-                continue
-            self.q.put(("vfile_done", (fn, str(origin), n_ok, n_bad, elapsed)))
-            # 深度校验阶段:活源试搜 + 分类探测 → deep.json(全失效文件不进入)
-            if deep and n_ok > 0:
-                if self.stop_verify.is_set():
-                    aborted = True
-                    break
-                try:
-                    self._deep_stage(fi, n_files, fn, origin, srcs, results)
-                except Exception as e:
-                    self.q.put(("log", "✘ %s 深度校验异常: %s" % (fn, e)))
-                if self.stop_verify.is_set():      # 深度阶段中途停止:后续文件不再开始
-                    aborted = True
-                    break
-        elapsed_total = time.time() - t_total
-        self.q.put(("vdone", (n_files, tot_ok, tot_bad, elapsed_total, aborted)))
-
-    # ------------------------------------------------------ 深度校验阶段 -----
-    # 活性通过的源逐个试搜(关键词 DEEP_KEYWORD,走 engine.search_one 单源路径)
-    # + 分类探测(engine.explore_first_page),每源至多 2 个额外请求;并发沿用
-    # VERIFY_WORKERS。中途停止:已测源结果照常写 deep.json(_meta.interrupted),
-    # 与 good 表"停止不写"不同 —— 深度结果是分析产物,部分数据也有价值。
-    def _deep_search_one(self, s):
-        """试搜单源 → (reason, hits, ms);中止返回 None。reason 空串=网络存活。"""
-        if self.stop_verify.is_set():
-            return None
-        t0 = time.time()
-        try:
-            hits, err = engine.search_one(s, DEEP_KEYWORD)
-        except Exception as e:                     # 引擎层不该抛,兜底归因
-            hits, err = [], "connect"
-            self.q.put(("log", "⚠ 试搜异常(%s): %s"
-                        % (s.get("bookSourceName", "?"), e)))
-        return (err, len(hits), int((time.time() - t0) * 1000))
-
-    def _deep_explore_one(self, s):
-        """分类探测单源 → (reason, items, ms);中止返回 None。"""
-        if self.stop_verify.is_set():
-            return None
-        t0 = time.time()
-        try:
-            items, err = engine.explore_first_page(s)
-        except Exception as e:
-            items, err = 0, "connect"
-            self.q.put(("log", "⚠ 分类探测异常(%s): %s"
-                        % (s.get("bookSourceName", "?"), e)))
-        return (err, items, int((time.time() - t0) * 1000))
-
-    def _deep_stage(self, fi, n_files, fn, origin, srcs, results):
-        """对活性通过的源跑深度阶段并写 <原名>.deep.json + 日志分布摘要。"""
-        alive = [s for s, r in zip(srcs, results) if r and r[0] == "ok"]
-        if not alive:
-            return
-        pool = ThreadPoolExecutor(max_workers=VERIFY_WORKERS)
-
-        def _run_phase(fn_one, phase, out):
-            """并发跑一个探测阶段:as_completed 收割并节流上报进度(vdeep)。"""
-            total = len(alive)
-            futs = {pool.submit(fn_one, s): i for i, s in enumerate(alive)}
-            done = 0
-            for fut in as_completed(futs):
-                i = futs[fut]
-                try:
-                    out[i] = fut.result()
-                except Exception:
-                    out[i] = None                  # 与中止同样按未测处理
-                done += 1
-                if done % 25 == 0 or done == total:
-                    self.q.put(("vdeep", (fi + 1, n_files, fn, phase,
-                                          done, total)))
-            return out
-
-        try:
-            self.q.put(("vdeep", (fi + 1, n_files, fn, "试搜", 0, len(alive))))
-            sres = _run_phase(self._deep_search_one, "试搜", [None] * len(alive))
-            stopped = any(r is None for r in sres)
-            eres = [None] * len(alive)
-            if not stopped and not self.stop_verify.is_set():
-                self.q.put(("vdeep", (fi + 1, n_files, fn, "分类", 0, len(alive))))
-                eres = _run_phase(self._deep_explore_one, "分类", eres)
-            else:
-                stopped = True
-        finally:
-            pool.shutdown(wait=False)
-        rows = []
-        for s, sr, er in zip(alive, sres, eres):
-            if sr is None:                         # 中止未检测,不进结果
-                continue
-            if er is None:                         # 分类阶段未测到(搜索阶段已中止)
-                raw_ev, eitems, ems = None, 0, None
-            else:
-                raw_ev, eitems, ems = er
-            sv, ev, level = deep_classify(sr[0], sr[1], raw_ev, eitems)
-            rows.append({
-                "name": (s.get("bookSourceName") or "").strip(),
-                "url": (s.get("bookSourceUrl") or "").strip(),
-                "level": level,
-                "search": {"verdict": sv, "hits": sr[1], "ms": sr[2],
-                           "reason": sr[0] or None},
-                "explore": {"verdict": ev, "items": eitems, "ms": ems,
-                            "reason": (raw_ev or None) if raw_ev is not None
-                            else "untested"},
-            })
-        interrupted = stopped or self.stop_verify.is_set()
-        counts = write_deep_table(origin, fn, rows, DEEP_KEYWORD,
-                                  interrupted=interrupted)
-        self.q.put(("vdeep", (fi + 1, n_files, fn, "完成", len(rows), len(alive))))
-        self.q.put(("log", "深度结果(%s): %s%s"
-                    % (fn, _fmt_deep_summary(counts),
-                       " · 已中止,部分源未测" if interrupted else "")))
-        # 深度判定灌入引擎(搜索过滤联动):全部文件合并后统一 set_deep
-        self._load_deep_tables()
+    def _report(self, ev):
+        """core → UI 事件桥:core 只 emit((kind, payload)),这里进队列。"""
+        self.q.put(ev)
 
     def _load_deep_tables(self):
         """扫描清单内各文件的 .deep.json,合并灌入 engine.set_deep(搜索过滤用)。
 
-        键 = (书源名, bookSourceUrl),与跨文件去重身份(§5.7)同口径;
-        多文件合并去重后同一身份只留一条判定,重复源覆盖次序 = 清单顺序。
+        判定表读取/合并/灌引擎在 core.verify.load_deep_tables;UI 只缓存
+        表与打日志。
         """
-        table = {}
-        for fn in self.checked_files:
-            dp = deep_table_path(SOURCE_DIR / fn)
-            try:
-                data = json.loads(dp.read_text(encoding="utf-8"))
-            except Exception:
-                continue
-            for row in (data.get("results") or []):
-                k = ((row.get("name") or "").strip(),
-                     (row.get("url") or "").strip())
-                sv = (row.get("search") or {}).get("verdict")
-                if k[0] and k[1] and sv:
-                    table[k] = sv
+        table = core_verify.load_deep_tables(list(self.checked_files))
         self.deep_table = table
-        engine.set_deep(table)
         if table:
             n_skip = sum(1 for v in table.values() if v in ("no_result", "error"))
             self.log("深度校验记录已加载: %d 源(试搜未通过 %d —— 可勾选"
@@ -1329,80 +768,18 @@ class App:
         threading.Thread(target=self._do_search, args=(key, srcs, fuzzy), daemon=True).start()
 
     def _do_search(self, key, srcs, fuzzy):
-        def prog(done, total, msg):
-            self.q.put(("sprog", "%d/%d 源 · %s" % (done, total, msg)))
+        """搜索线程入口:组装 keep 谓词(「只看相关结果」)调 core.search.search_run。
 
-        def onhit(h):
-            self.q.put(("hit", h))
-
-        try:
-            hits = engine.search_sources(srcs, key, on_progress=prog, stop=self.stop_search,
-                                         workers=SEARCH_WORKERS, on_hit=onhit, fuzzy=fuzzy)
-        except Exception as e:
-            self.q.put(("log", "搜索异常: %s" % e))
-            hits = []
-        self.q.put(("sres", (len(hits), fuzzy)))
-
-    def _rel_terms(self):
-        """相关性判定词:关键词 + 其模糊变体(变体重试产生的结果也算相关)。"""
-        k = (self._last_key or self.var_key.get() or "").strip()
-        if not k:
-            return []
-        terms = [k] + engine.make_key_variants(k)
-        return [t.lower() for t in terms if len(t) >= 2]
-
-    def _relevant(self, h):
-        """只看相关结果:按当前域(自动/书名/作者/分类)判定是否保留。
-
-        自动:书名/作者/分类/简介至少一处命中(现有行为)。
-        书名/作者/分类:仅该域命中关键词或其变体时保留。
-        很多小站无视搜索词、返回热门书充数,本地不过滤就会混进无关结果。
+        相关性过滤(原写在 _handle_event 的 hit 分支)已上移至 core ——
+        UI 只渲染收到的 hit 事件。
         """
-        terms = self._rel_terms()
-        if not terms:
-            return True
-        domain = self.var_domain.get()
-        if domain == "书名":
-            name = (h.get("name") or "").lower()
-            return any(t in name for t in terms)
-        elif domain == "作者":
-            author = (h.get("author") or "").lower()
-            return any(t in author for t in terms)
-        elif domain == "分类":
-            kind = (h.get("kind") or "").lower()
-            return any(t in kind for t in terms)
-        # 自动:四域任一命中
-        text = " ".join((h.get("name") or "", h.get("author") or "",
-                         h.get("kind") or "", h.get("intro") or "")).lower()
-        return any(t in text for t in terms)
-
-    def _score_hit(self, h):
-        """相关度:书名同名/含词 > 作者含词 > 分类含词 > 简介含词 > 字符相似度。"""
-        import difflib
-        k = (self._last_key or "").strip()
-        if not k:
-            return 0
-        kl = k.lower()
-        name = (h.get("name") or "").lower()
-        s = 0
-        if kl == name:
-            s += 100
-        elif kl in name:
-            s += 80
-        else:
-            for v in self._rel_terms():          # 变体命中书名也给分
-                if v != kl and v in name:
-                    s += 60
-                    break
-        if kl in (h.get("author") or "").lower():
-            s += 40
-        if kl in (h.get("kind") or "").lower():
-            s += 25
-        if kl in (h.get("intro") or "").lower():
-            s += 15
-        if s == 0:
-            s += difflib.SequenceMatcher(None, kl, name).ratio() * 30
-        return s
+        keep = None
+        if self.var_rel.get():
+            rel_key = self._last_key or key          # 变体重试产生的结果也算相关
+            domain = self.var_domain.get()
+            keep = lambda h: core_search.relevant(h, rel_key, domain)
+        core_search.search_run(srcs, key, emit=self._report,
+                               stop=self.stop_search, fuzzy=fuzzy, keep=keep)
 
     def stop_all(self):
         self.stop_search.set()
@@ -1468,10 +845,11 @@ class App:
                 return 10 ** 9
 
         for g in groups.values():
-            g.sort(key=lambda x: (self._completeness(x), self._score_hit(x),
+            g.sort(key=lambda x: (self._completeness(x),
+                                  core_search.score_hit(x, self._last_key),
                                   -_rt(x)), reverse=True)
-        order.sort(key=lambda k: max(self._score_hit(x) for x in groups[k]),
-                   reverse=True)
+        order.sort(key=lambda k: max(core_search.score_hit(x, self._last_key)
+                                     for x in groups[k]), reverse=True)
         return [x for k in order for x in groups[k]]
 
     def _current_keys(self):
@@ -1507,42 +885,8 @@ class App:
         self._mem_save(keys)
 
     def _mem_load(self):
-        try:
-            with open(STATE_FILE, encoding="utf-8") as f:
-                d = json.load(f)
-            # JSON 数组读回来是 list,而 _hit_key 产出 tuple;统一成 tuple 才能进集合
-            sel = [tuple(k) if isinstance(k, list) else k
-                   for k in (d.get("selected") or [])]
-            # 勾选文件清单:无 sources 字段(旧记忆)→ 从旧 verify_origin 一次性迁移
-            sources = d.get("sources")
-            if sources is None:
-                sources = ([Path(d["verify_origin"]).name]
-                           if d.get("verify_origin") else None)
-            dones = d.get("verify_dones")
-            if not isinstance(dones, dict):
-                dones = {}
-            if sources and not dones and isinstance(d.get("verify_done"), dict) \
-                    and d["verify_done"].get("origin"):
-                dones = {sources[0]: d["verify_done"]}   # 旧单条校验记录 → 按文件挂
-            return {"multi": True, "selected": sel,
-                    "verify_origin": d.get("verify_origin") or "",
-                    "verify_done": d.get("verify_done") or {},
-                    "sources": [str(x) for x in sources] if sources else sources,
-                    "verify_dones": dones,
-                    "fuzzy": bool(d.get("fuzzy", True)),
-                    "rel": bool(d.get("rel", True)),
-                    "deep_only": bool(d.get("deep_only", False)),
-                    "para_tabs": _para_clamp(d.get("para_tabs")),
-                    "fmt": d.get("fmt") or "epub",
-                    "mode": d.get("mode") or "single",
-                    "domain": d.get("domain") or "自动"}
-        except Exception:
-            # 无记忆/文件损坏:空选中 + 出厂默认选项。多选交互常开(单击仍是单选,无害)。
-            return {"multi": True, "selected": [], "verify_origin": "",
-                    "verify_done": {}, "sources": None, "verify_dones": {},
-                    "fuzzy": True, "rel": True, "deep_only": False,
-                    "para_tabs": AUTO_PARA_TABS,
-                    "fmt": "epub", "mode": "single", "domain": "自动"}
+        """读运行记忆(读取/迁移/默认值逻辑在 core.mem.load_state)。"""
+        return core_mem.load_state(STATE_FILE)
 
     def _mem_save(self, keys=None):
         """选中变化后的落盘入口(keys=None 时取当前树选中)。"""
@@ -1587,8 +931,7 @@ class App:
                     "fmt": self.var_fmt.get() or "epub",
                     "mode": self.var_mode.get() or "single",
                     "domain": self.var_domain.get() or "自动"}
-            with open(STATE_FILE, "w", encoding="utf-8") as f:
-                json.dump(data, f, ensure_ascii=False)
+            core_mem.save_state(STATE_FILE, data)   # JSON 落盘在 core.mem
             self._mem_last = {"multi": True,
                               "selected": list(keys),
                               "sources": data["sources"],
@@ -1674,7 +1017,7 @@ class App:
             except Exception:
                 pass
         self.deep_table = {}
-        engine.set_deep({})        # deep.json 已随之删除,深度过滤表同步清空
+        core.set_deep({})          # deep.json 已随之删除,深度过滤表同步清空
         self._apply_selection([], notify=False)
         self._reload_all()
         messagebox.showinfo(
@@ -1744,133 +1087,120 @@ class App:
         btns.pack(fill="x", padx=8, pady=(0, 8))
         cur_url = [""]
 
-        # —— 浏览器登录抓取(cdp_cookie):弹默认浏览器 → 登录 → CDP 抓 Cookie ——
-        auth_sess = {"handle": None, "phase": "idle", "pending": None}
+        # —— 浏览器登录抓取编排(core.auth_manager):worker 线程只 emit((kind,
+        # payload)) 进窗口局部队列,本窗口 poll 轮询消费(ttk 非线程安全) ——
+        evq = queue.Queue()
         poll_job = [None]
+        sess = {"phase": "idle"}      # idle / launching / launched / capturing
+        mgr = core_auth.AuthManager(self._auth, evq.put,
+                                    APP_DIR / "auth_profile")
 
         def _stat(msg, color="#888"):
             lbl_stat.config(text=msg, foreground=color)
 
         def poll_fetch():
-            """工作线程只写 auth_sess["pending"],UI 侧轮询取结果(ttk 非线程安全)。"""
-            st = auth_sess["pending"]
-            if st:
-                auth_sess["pending"] = None
-                if st["state"] == "auto_done":
-                    # 全自动三段式终点:Phase2 并行登录扫结束即汇总,不再回串行
-                    if not batch["active"]:
-                        pass                       # 结束批量后迟到的结果, 丢弃
-                    elif st.get("stopped"):
-                        batch_finish("已手动结束: 秒过 %d 站 + 并行扫抓到 %d 站 "
-                                     "+ 登录扫抓到 %d 站,已抓到的 Cookie 保留。"
-                                     % (st["n_instant"], st["n_para"],
-                                        st["n_login_got"]))
-                    else:
-                        batch_finish("全自动完成: 秒过 %d 站 + 并行扫抓到 %d 站 "
-                                     "+ 登录扫抓到 %d 站(另跳过 %d 站),"
-                                     "Cookie 已全部注入。"
-                                     % (st["n_instant"], st["n_para"],
-                                        st["n_login_got"],
-                                        st["n_login"] - st["n_login_got"]))
-                elif st["state"] == "launched":
-                    auth_sess["phase"] = "launched"
-                    warn = st.get("warn") or ""
-                    if batch["active"]:
-                        btn_fetch.config(text="抓取本站(%d/%d)"
-                                         % (batch["idx"] + 1, len(batch["hosts"])),
-                                         state="normal")
-                        base = ("批量 %d/%d: %s —— 在浏览器里登录(已登录可忽略),"
-                                "点「抓取本站」;不用配 Cookie 点「跳过该站」。"
-                                % (batch["idx"] + 1, len(batch["hosts"]),
-                                   batch["hosts"][batch["idx"]]))
-                        _stat(base + (" ⚠ " + warn if warn else ""),
-                              "#cc0000" if warn else "#888")
-                    else:
-                        btn_fetch.config(text="我登录好了 → 抓取", state="normal")
-                        if warn:
-                            _stat(warn + " 仍可尝试抓取,或换一个源。", "#cc0000")
+            """工作线程只 emit((kind, payload)) 进 evq,UI 侧轮询消费(ttk 非线程安全)。"""
+            try:
+                while True:
+                    ek, ep = evq.get_nowait()
+                    if ek == "log":
+                        self.log(ep)
+                    elif ek == "stat":
+                        _stat(*ep)
+                    elif ek == "launched":
+                        sess["phase"] = "launched"
+                        warn = ep or ""
+                        if mgr.active:
+                            btn_fetch.config(text="抓取本站(%d/%d)"
+                                             % (mgr.idx + 1, len(mgr.hosts)),
+                                             state="normal")
+                            base = ("批量 %d/%d: %s —— 在浏览器里登录(已登录可忽略),"
+                                    "点「抓取本站」;不用配 Cookie 点「跳过该站」。"
+                                    % (mgr.idx + 1, len(mgr.hosts),
+                                       mgr.hosts[mgr.idx]))
+                            _stat(base + (" ⚠ " + warn if warn else ""),
+                                  "#cc0000" if warn else "#888")
                         else:
-                            _stat("浏览器已启动,请在浏览器里登录;完成后点本按钮抓取 Cookie。")
-                elif st["state"] == "captured":
-                    txt_ck.delete("1.0", "end")
-                    txt_ck.insert("1.0", st["cookie"])
-                    if batch["active"]:
-                        host = batch["hosts"][batch["idx"]]
-                        n = 0
-                        if st["cookie"]:
-                            for u in batch["targets"][host]:
-                                cfg = dict(self._auth.get(u) or {})
-                                cfg["cookie"] = _merge_cookie_str(
-                                    cfg.get("cookie"), st["cookie"])
-                                self._auth[u] = cfg
-                                n += 1
-                            save_auth_state(self._auth)
-                            engine.set_auth(self._auth)
-                            self.log("批量: 已保存 %s 的 Cookie(%d 个源)" % (host, n))
-                        else:
-                            self.log("批量: %s 未抓到 Cookie(可能打不开/不是目标站),已跳过"
-                                     % host)
-                        batch_next()
-                    else:
-                        cdp_cookie.close(auth_sess["handle"])
-                        auth_sess["handle"] = None
-                        auth_sess["phase"] = "idle"
-                        if st["cookie"]:
+                            btn_fetch.config(text="我登录好了 → 抓取", state="normal")
+                            if warn:
+                                _stat(warn + " 仍可尝试抓取,或换一个源。", "#cc0000")
+                            else:
+                                _stat("浏览器已启动,请在浏览器里登录;完成后点本按钮抓取 Cookie。")
+                    elif ek == "captured":
+                        # 单站抓取终点(批量模式不经此事件,见 core.grab_current)
+                        txt_ck.delete("1.0", "end")
+                        txt_ck.insert("1.0", ep)
+                        mgr.close_browser()
+                        sess["phase"] = "idle"
+                        if ep:
                             btn_fetch.config(text="浏览器登录抓取", state="normal")
                             _stat("已抓取 %d 条 Cookie 并填入 → 上方选中目标源(可多选)→ 点「保存到所选」" %
-                                  len([p for p in st["cookie"].split("; ") if p]),
+                                  len([p for p in ep.split("; ") if p]),
                                   "#0066cc")
                         else:
                             btn_fetch.config(text="重试抓取", state="normal")
                             _stat("没抓到该站点的 Cookie —— 浏览器打开的可能不是目标站点"
                                   "(网址无效会落到 Edge 主页),或该站没种 Cookie。"
                                   "可点「重试抓取」或手动粘贴。", "#cc0000")
-                else:
-                    msg = st["msg"]
-                    if "10061" in msg or "积极拒绝" in msg:
-                        msg += " —— 抓取浏览器已关闭或未就绪;重新点「浏览器登录抓取」即可。"
-                    if batch["active"]:
-                        batch_finish("批量抓取中止: %s" % msg, "#cc0000")
-                    else:
-                        if auth_sess["handle"]:
-                            cdp_cookie.close(auth_sess["handle"])
-                        auth_sess["handle"] = None
-                        auth_sess["phase"] = "idle"
-                        btn_fetch.config(text="浏览器登录抓取", state="normal")
-                        _stat(msg, "#cc0000")
-            if batch["active"] and batch.get("stage") == "para":
-                now = time.time()
-                if now - batch["stat_t"] >= 1.0:
-                    batch["stat_t"] = now
-                    _stat("并行扫 %d/%d 站(%d 标签, 完成后进入并行登录扫)…"
-                          % (batch["para_done"], batch["para_total"],
-                             batch.get("k") or AUTO_PARA_TABS))
-            elif batch["active"] and batch.get("stage") == "login":
-                # 并行登录扫:进度 + 每个新标签开好的零点击提示(文案纠偏核心)
-                now = time.time()
-                if not batch.get("login_entered"):
-                    batch["login_entered"] = True
-                    btn_bpause.config(text="暂停自动")
-                    btn_bpause.pack(side="left", padx=4)   # 「跳过该站」在并行阶段无单站语义, 不出现
-                    ni, npar, nl = batch.get("login_info") or (0, 0, 0)
-                    self.log("并行扫完成: 秒过 %d 站 + 并行扫抓到 %d 站;"
-                             "剩余 %d 站进入并行登录扫(%d 标签)"
-                             % (ni, npar, nl, batch.get("k") or AUTO_PARA_TABS))
-                if not batch.get("paused") \
-                        and now - batch["stat_t"] >= 1.0:   # 暂停提示不被进度刷掉
-                    batch["stat_t"] = now
-                    hint = ("在浏览器里登录该站即可,无需点按钮 —— %ds 无操作"
-                            "自动抓取跳下一站(点击/输入会重置倒计时)"
-                            % batch.get("cur_idle", AUTO_IDLE_SECS))
-                    _stat("并行登录 %d/%d 站(%d 标签):已抓 %d · 已跳 %d | %s —— %s"
-                          % (batch["login_done"], batch["login_total"],
-                             batch.get("k") or AUTO_PARA_TABS,
-                             batch["login_got"], batch["login_skip"],
-                             batch.get("cur_host") or "", hint))
+                    elif ek == "error":
+                        msg = ep
+                        if "10061" in msg or "积极拒绝" in msg:
+                            msg += " —— 抓取浏览器已关闭或未就绪;重新点「浏览器登录抓取」即可。"
+                        if mgr.active:
+                            batch_finish("批量抓取中止: %s" % msg, "#cc0000")
+                        else:
+                            mgr.close_browser()
+                            sess["phase"] = "idle"
+                            btn_fetch.config(text="浏览器登录抓取", state="normal")
+                            _stat(msg, "#cc0000")
+                    elif ek == "batch_opening":
+                        btn_fetch.config(state="disabled")
+                        _stat("批量 %d/%d: 正在打开 %s …(登录后点「抓取本站」)"
+                              % (ep[0], ep[1], ep[2]))
+                    elif ek == "batch_done":
+                        batch_finish(ep)
+                    elif ek == "auto_done":
+                        # 全自动三段式终点:Phase2 并行登录扫结束即汇总,不再回串行
+                        if not mgr.active:
+                            pass                   # 结束批量后迟到的结果, 丢弃
+                        elif ep.get("stopped"):
+                            batch_finish("已手动结束: 秒过 %d 站 + 并行扫抓到 %d 站 "
+                                         "+ 登录扫抓到 %d 站,已抓到的 Cookie 保留。"
+                                         % (ep["n_instant"], ep["n_para"],
+                                            ep["n_login_got"]))
+                        else:
+                            batch_finish("全自动完成: 秒过 %d 站 + 并行扫抓到 %d 站 "
+                                         "+ 登录扫抓到 %d 站(另跳过 %d 站),"
+                                         "Cookie 已全部注入。"
+                                         % (ep["n_instant"], ep["n_para"],
+                                            ep["n_login_got"],
+                                            ep["n_login"] - ep["n_login_got"]))
+                    elif ek == "login_stage":
+                        # 并行登录扫一次性入口:暂停按钮就位 + 阶段日志(文案纠偏核心)
+                        btn_bpause.config(text="暂停自动")
+                        btn_bpause.pack(side="left", padx=4)
+                        # 「跳过该站」在并行阶段无单站语义, 不出现
+                        ni, npar, nl, kk = ep
+                        self.log("并行扫完成: 秒过 %d 站 + 并行扫抓到 %d 站;"
+                                 "剩余 %d 站进入并行登录扫(%d 标签)"
+                                 % (ni, npar, nl, kk or AUTO_PARA_TABS))
+                    elif ek == "pprog":
+                        _stat("并行扫 %d/%d 站(%d 标签, 完成后进入并行登录扫)…"
+                              % (ep[0], ep[1], ep[2] or AUTO_PARA_TABS))
+                    elif ek == "lprog":
+                        # 零点击提示(文案纠偏核心):每个新标签开好后跟着新站走
+                        hint = ("在浏览器里登录该站即可,无需点按钮 —— %ds 无操作"
+                                "自动抓取跳下一站(点击/输入会重置倒计时)"
+                                % (ep[6] or AUTO_IDLE_SECS))
+                        _stat("并行登录 %d/%d 站(%d 标签):已抓 %d · 已跳 %d | %s —— %s"
+                              % (ep[0], ep[1], ep[2] or AUTO_PARA_TABS,
+                                 ep[3], ep[4], ep[5] or "", hint))
+            except queue.Empty:
+                pass
             poll_job[0] = win.after(150, poll_fetch)
 
         def on_fetch():
-            if auth_sess["phase"] in ("launching", "capturing"):
+            if sess["phase"] in ("launching", "capturing"):
                 return
             # 打开目标优先选源的登录页(纯网址 loginUrl)—— 登录页常在 passport
             # 等子域;Cookie 抓取过滤仍按站点主机, 域级 Cookie 能匹配进来
@@ -1888,71 +1218,32 @@ class App:
                 if not open_url or not open_url.strip():
                     return
                 open_url = open_url.strip()
-            if auth_sess["phase"] == "idle":
-                auth_sess["phase"] = "launching"
-                auth_sess["url"] = open_url
-                auth_sess["grab_host"] = grab_host or _url_host(open_url)
+            if sess["phase"] == "idle":
+                sess["phase"] = "launching"
+                sess["grab_host"] = grab_host or _url_host(open_url)
                 btn_fetch.config(state="disabled")
                 _stat("正在启动浏览器…")
-
-                def _launch(url=open_url):
-                    try:
-                        h = cdp_cookie.launch_for_auth(
-                            url, APP_DIR / "auth_profile")
-                        auth_sess["handle"] = h
-                        auth_sess["pending"] = {
-                            "state": "launched",
-                            "warn": cdp_cookie.page_mismatch(h, url)}
-                    except Exception as e:
-                        auth_sess["pending"] = {"state": "error", "msg": str(e)}
-
-                threading.Thread(target=_launch, daemon=True).start()
+                mgr.launch_single(open_url)
             else:                                     # launched → 抓取
-                auth_sess["phase"] = "capturing"
+                sess["phase"] = "capturing"
                 btn_fetch.config(state="disabled")
                 _stat("正在从浏览器抓取 Cookie…")
-                host = auth_sess.get("grab_host") or _url_host(open_url)
-                handle = auth_sess["handle"]
-
-                def _grab():
-                    try:
-                        auth_sess["pending"] = {
-                            "state": "captured",
-                            "cookie": cdp_cookie.fetch_cookies(handle, host)}
-                    except Exception as e:
-                        auth_sess["pending"] = {"state": "error",
-                                                "msg": "抓取失败: %s" % e}
-
-                threading.Thread(target=_grab, daemon=True).start()
-
+                mgr.grab_single(sess.get("grab_host") or _url_host(open_url))
 
         def close_win():
             if poll_job[0]:
                 win.after_cancel(poll_job[0])
-            batch["active"] = False
-            if auth_sess["handle"]:
-                cdp_cookie.close(auth_sess["handle"])
+            mgr.abort()
             win.destroy()
 
         # —— 批量抓取:选中源(默认全部)按站点去重。手动逐站:每站登录后点
         # 「抓取本站」即保存并跳下一站(浏览器与登录态跨站保持)。
         # 自动模式(v1.8.1):三段式全自动 —— Phase0 秒过 → Phase1 并行扫 →
         # Phase2 并行登录扫(K 路标签池, 用户在页面里登录即零点击抓走),不再回串行。
-        batch = {"active": False, "auto": False, "paused": False, "stage": "idle",
-                 "hosts": [], "targets": {}, "idx": -1, "stat_t": 0.0,
-                 "para_done": 0, "para_total": 0, "k": AUTO_PARA_TABS,
-                 "stop_req": False, "login_entered": False, "login_info": (),
-                 "login_total": 0, "login_done": 0, "login_got": 0,
-                 "login_skip": 0, "cur_host": "", "cur_idle": AUTO_IDLE_SECS}
+        # 状态机与 CDP 编排在 core.auth_manager.AuthManager,这里只发令 + 渲染。
 
         def batch_finish(msg, color="#0066cc"):
-            batch["active"] = False
-            batch["stage"] = "idle"
-            batch["stop_req"] = False
-            if auth_sess["handle"]:
-                cdp_cookie.close(auth_sess["handle"])
-            auth_sess["handle"] = None
-            auth_sess["phase"] = "idle"
+            mgr.finish()
             btn_fetch.config(text="浏览器登录抓取", state="normal")
             btn_skip.pack_forget()
             btn_bstop.pack_forget()
@@ -1964,46 +1255,6 @@ class App:
             _stat(msg, color)
             self.log(msg)
 
-        def _open_current():
-            """(重新)打开 batch 当前站点的页面,工作线程执行;浏览器死了会自动重开。
-
-            自动模式不做 page_mismatch 阻塞核验(最多等 8s)—— 倒计时 tick
-            本来就观察页面 URL,打不开的站静默期满自然跳过;手动模式保留核验警告。
-            """
-            host = batch["hosts"][batch["idx"]]
-            url = batch.get("login_map", {}).get(host)                 or sorted(batch["targets"][host])[0]   # 有登录页先开登录页
-
-            def _open():
-                try:
-                    if auth_sess["handle"] is None or \
-                            not cdp_cookie.is_alive(auth_sess["handle"]):
-                        if auth_sess["handle"]:
-                            cdp_cookie.close(auth_sess["handle"])
-                        auth_sess["handle"] = cdp_cookie.launch_for_auth(
-                            url, APP_DIR / "auth_profile")
-                    else:
-                        cdp_cookie.navigate(auth_sess["handle"], url)
-                    warn = "" if batch.get("auto") else \
-                        cdp_cookie.page_mismatch(auth_sess["handle"], url)
-                    auth_sess["pending"] = {"state": "launched", "warn": warn}
-                except Exception as e:
-                    auth_sess["pending"] = {"state": "error",
-                                            "msg": "打开 %s 失败: %s" % (host, e)}
-
-            threading.Thread(target=_open, daemon=True).start()
-
-        def batch_next():
-            batch["idx"] += 1
-            if batch["idx"] >= len(batch["hosts"]):
-                batch_finish("批量抓取结束: 共处理 %d 个站点,Cookie 已全部注入。"
-                             % len(batch["hosts"]))
-                return
-            host = batch["hosts"][batch["idx"]]
-            btn_fetch.config(state="disabled")
-            _stat("批量 %d/%d: 正在打开 %s …(登录后点「抓取本站」)"
-                  % (batch["idx"] + 1, len(batch["hosts"]), host))
-            _open_current()
-
         def batch_start(auto=False):
             sel = self._auth_kit.get()
             urls = {tbl.item(i, "values")[1] for i in sel}
@@ -2013,45 +1264,20 @@ class App:
                         % len(self.sources), parent=win):
                     return
                 urls = {tbl.item(i, "values")[1] for i in tbl.get_children()}
-            from urllib.parse import urlsplit
-            targets_all = {}
-            for u in urls:
-                u = u.strip()
-                if "://" not in u:
-                    u = "http://" + u
-                h = (urlsplit(u).hostname or "").lower()
-                if h:
-                    targets_all.setdefault(h, set()).add(u)
-            n_all = len(targets_all)
-            targets = targets_all
-            skipped = 0
-            if var_skip_cfg.get():      # 跳过已配 Cookie 的站点(重跑批量秒级)
-                targets = {h: us for h, us in targets_all.items()
-                           if not any((self._auth.get(u) or {}).get("cookie")
-                                      for u in us)}
-                skipped = n_all - len(targets)
-                if not targets and n_all:
-                    # 全被过滤不能是死路: 给"全部重抓"的机会, 保住自动化体验
-                    if messagebox.askyesno(
-                            "批量抓取",
-                            "选中的 %d 个站点全都配过 Cookie。\n"
-                            "要忽略跳过、全部重抓一遍吗?" % n_all, parent=win):
-                        targets = targets_all
-                        skipped = 0
-                    else:
-                        return
-            login_map = {}
-            for s in self.sources:
-                b = (s.get("bookSourceUrl") or "").strip()
-                h = _url_host(b if "://" in b else "https://" + b)
-                lu = (s.get("loginUrl") or "").strip()
-                if h and h not in login_map and lu.startswith(("http://", "https://"))                         and not re.search(r"<js>|@js:", lu, re.I):
-                    login_map[h] = lu
-            batch["hosts"] = sorted(targets)
-            batch["targets"] = targets
-            batch["login_map"] = login_map
-            batch["idx"] = -1
-            if not batch["hosts"]:
+            targets, skipped, n_all = core_auth.collect_targets(
+                urls, self._auth, var_skip_cfg.get())
+            if var_skip_cfg.get() and not targets and n_all:
+                # 全被过滤不能是死路: 给"全部重抓"的机会, 保住自动化体验
+                if messagebox.askyesno(
+                        "批量抓取",
+                        "选中的 %d 个站点全都配过 Cookie。\n"
+                        "要忽略跳过、全部重抓一遍吗?" % n_all, parent=win):
+                    targets, skipped, _ = core_auth.collect_targets(
+                        urls, self._auth, False)
+                else:
+                    return
+            login_map = core_auth.build_login_map(self.sources)
+            if not targets:
                 messagebox.showinfo("批量抓取", "选中的源没有有效网址。", parent=win)
                 return
             skip_note = "(已跳过 %d 个配过 Cookie 的站点)" % skipped if skipped else ""
@@ -2061,371 +1287,69 @@ class App:
                        "直接秒过;② 其余 %d 路标签并行访问抓取;③ 仍没抓到的站进入"
                        "并行登录扫,你在页面里登录即可,无需点按钮 —— 无操作满几秒"
                        "自动抓取跳下一站。确定开始?"
-                       % (len(batch["hosts"]), skip_note, k))
+                       % (len(targets), skip_note, k))
             else:
                 tip = ("手动逐站:将依次访问 %d 个不同站点%s,每站登录后点"
                        "「抓取本站」,Cookie 自动保存并跳下一站(已登录的站点无需"
-                       "重复登录)。确定开始?" % (len(batch["hosts"]), skip_note))
+                       "重复登录)。确定开始?" % (len(targets), skip_note))
             if not messagebox.askyesno("批量抓取", tip, parent=win):
                 return
-            batch["active"] = True
-            batch["auto"] = auto
-            batch["paused"] = False
-            batch["stop_req"] = False
-            batch["stage"] = "serial"
-            batch["k"] = k
+            mgr.begin(sorted(targets), targets, login_map, k, auto)
             btn_bstart.pack_forget()
             btn_bauto.pack_forget()
             btn_bstop.pack(side="left")
             if auto:
                 # 三段式: Phase0 秒过 → Phase1 并行扫 → Phase2 并行登录扫。
-                # 全程在工作线程, 进度由 poll 轮询 batch 计数显示。
-                batch["stage"] = "para"
-                batch["para_done"] = 0
-                batch["para_total"] = len(batch["hosts"])
+                # 全程在工作线程, 进度经 emit → poll 轮询显示。
                 self.log("自动批量: %d 个站点 —— 浏览器已有 Cookie 的先秒过,"
-                         "其余 %d 标签并行访问…" % (len(batch["hosts"]), k))
+                         "其余 %d 标签并行访问…" % (len(mgr.hosts), k))
                 _stat("正在启动浏览器…")
-
-                def _auto_run():
-                    try:
-                        first = batch["hosts"][0]
-                        auth_sess["handle"] = cdp_cookie.launch_for_auth(
-                            sorted(batch["targets"][first])[0],
-                            APP_DIR / "auth_profile")
-                        # —— Phase 0: 浏览器已有 Cookie 的域, 拆库直存, 零访问 ——
-                        allc = cdp_cookie.all_cookies(auth_sess["handle"])
-                        instant, remaining = {}, []
-                        for h in batch["hosts"]:
-                            cks = [c for c in allc
-                                   if cdp_cookie._domain_matches(
-                                       h, c.get("domain") or "")]
-                            if cks:
-                                instant[h] = "; ".join(
-                                    "%s=%s" % (c["name"], c["value"]) for c in cks)
-                            else:
-                                remaining.append(h)
-                        n_ins_sites = 0
-                        for h, ck in instant.items():
-                            for u in batch["targets"][h]:
-                                cfg = dict(self._auth.get(u) or {})
-                                cfg["cookie"] = _merge_cookie_str(
-                                    cfg.get("cookie"), ck)
-                                self._auth[u] = cfg
-                                n_ins_sites += 1
-                        if instant:
-                            save_auth_state(self._auth)
-                            engine.set_auth(self._auth)
-                        batch["instant"] = len(instant)
-                        batch["instant_sites"] = n_ins_sites
-                        # —— Phase 1: 其余站点并行扫 ——
-                        results = _para_sweep(auth_sess["handle"], remaining, k) \
-                            if remaining else {}
-                        got = sum(1 for ck in results.values() if ck)
-                        for h, ck in results.items():
-                            if ck:
-                                for u in batch["targets"][h]:
-                                    cfg = dict(self._auth.get(u) or {})
-                                    cfg["cookie"] = _merge_cookie_str(
-                                        cfg.get("cookie"), ck)
-                                    self._auth[u] = cfg
-                        if got:
-                            save_auth_state(self._auth)
-                            engine.set_auth(self._auth)
-                        # —— Phase 2: 仍没抓到的进入并行登录扫(标签池持续补位,
-                        #    跳过逻辑并入硬时限, 不再回串行) ——
-                        left = [h for h in remaining if not results.get(h)]
-                        n_login_got = 0
-                        if left and batch["active"]:
-                            batch["login_info"] = (len(instant), got, len(left))
-                            batch["stage"] = "login"   # poll 侧一次性入口(按钮/日志)
-                            batch["login_entered"] = False
-                            results2 = _login_sweep(auth_sess["handle"], left)
-                            n_login_got = sum(1 for ck in results2.values() if ck)
-                        auth_sess["pending"] = {
-                            "state": "auto_done",
-                            "n_instant": len(instant),
-                            "n_para": got, "n_login": len(left),
-                            "n_login_got": n_login_got,
-                            "stopped": bool(batch.get("stop_req"))
-                                       or not batch["active"]}
-                    except Exception as e:
-                        auth_sess["pending"] = {"state": "error", "msg": str(e)}
-
-                threading.Thread(target=_auto_run, daemon=True).start()
+                mgr.launch()
                 return
             btn_skip.pack(side="left", padx=4)
             self.log("批量抓取开始(手动逐站): %d 个站点(来源 %d 个书源)"
-                     % (len(batch["hosts"]), len(urls)))
-            batch_next()
-
-        def _para_sweep(handle, hosts, k):
-            """Phase 1 并行扫:k 个标签同时开, 每站加载+settle 后按域取 Cookie
-            并关标签。返回 {host: cookie 字符串}(空串=没抓到)。"""
-            results, lock = {}, threading.Lock()
-
-            def one(h):
-                url = sorted(batch["targets"][h])[0]
-                ck = ""
-                try:
-                    tid = cdp_cookie.open_tab(handle, url)
-                except Exception:
-                    pass
-                else:
-                    t0 = time.time()
-                    committed = False
-                    while time.time() - t0 < 8 and batch["active"]:
-                        ph = _url_host(cdp_cookie.tab_url(handle, tid))
-                        if _host_match(ph, h):
-                            committed = True
-                            break
-                        time.sleep(0.3)
-                    time.sleep(AUTO_PARA_SETTLE if committed else 0.5)
-                    try:
-                        allc = cdp_cookie.all_cookies(handle)
-                        ck = "; ".join("%s=%s" % (c["name"], c["value"])
-                                       for c in allc
-                                       if cdp_cookie._domain_matches(
-                                           h, c.get("domain") or ""))
-                    except Exception:
-                        ck = ""
-                    cdp_cookie.close_tab(handle, tid)
-                with lock:
-                    results[h] = ck
-                    batch["para_done"] += 1
-
-            with ThreadPoolExecutor(max_workers=max(1, k)) as ex:
-                list(ex.map(one, hosts))
-            return results
-
-        def _login_sweep(handle, hosts):
-            """Phase 2 并行登录扫:K 路标签池持续补位, 每标签独立监控(0.5s 一拍)。
-
-            到站(url 主机命中目标域)且该标签静默满 idle 秒(分级: 已配过 Cookie
-            1.5s / 全新站 5s)→ all_cookies 按域抓取保存(该站全部源),关标签补位;
-            没抓到也关标签补位;始终没到站超过硬时限 max(10s, 3×idle) → 跳过补位
-            (死站不再逐站干等)。用户在页面里登录(点击/输入/页面跳转)重置该标签
-            倒计时,静默期满自动抓走 —— 全程零点击。「暂停」冻结全部倒计时
-            (暂停时长顺延各标签时间戳),「结束批量」置 stop_req 后关池内标签收尾。
-            返回 {host: cookie}(空串=没抓到/跳过)。
-            """
-            k = max(1, int(batch.get("k") or AUTO_PARA_TABS))
-            results = {}
-            queue = list(hosts)
-            pool = []      # 池内标签:{tid, host, idle, arrived, opened_t, last_act, act_t}
-            batch["login_total"] = len(hosts)
-            batch["login_done"] = batch["login_got"] = batch["login_skip"] = 0
-            paused_at = None
-            try:
-                while (queue or pool) and batch["active"] \
-                        and not batch.get("stop_req"):
-                    now = time.time()
-                    if batch.get("paused"):
-                        paused_at = paused_at or now   # 冻结:不推进任何计时
-                        time.sleep(0.3)
-                        continue
-                    if paused_at is not None:          # 恢复:暂停时长顺延全部倒计时
-                        back = now - paused_at
-                        paused_at = None
-                        for s in pool:
-                            s["opened_t"] += back
-                            s["last_act"] += back
-                    # 补位:池有空位且队列有站 → 开下一个标签
-                    while len(pool) < k and queue and batch["active"] \
-                            and not batch.get("stop_req"):
-                        h = queue.pop(0)
-                        url = batch.get("login_map", {}).get(h) \
-                            or sorted(batch["targets"][h])[0]  # 有登录页先开登录页
-                        configured = any((self._auth.get(u) or {}).get("cookie")
-                                         for u in batch["targets"][h])
-                        idle = _para_idle(configured)
-                        try:
-                            tid = cdp_cookie.open_tab(handle, url)
-                        except Exception as e:
-                            self.log("并行登录: 打不开 %s(%s),已跳过" % (h, e))
-                            results[h] = ""
-                            batch["login_done"] += 1
-                            batch["login_skip"] += 1
-                            continue
-                        batch["cur_host"] = h          # 状态栏提示跟着新标签走
-                        batch["cur_idle"] = idle
-                        pool.append({"tid": tid, "host": h, "idle": idle,
-                                     "arrived": False, "opened_t": now,
-                                     "last_act": now, "act_t": 0.0})
-                    if not pool:
-                        time.sleep(0.3)
-                        continue
-                    time.sleep(0.5)                    # 监控一拍 0.5s
-                    try:
-                        tmap = cdp_cookie.tab_urls(handle)  # 一次取全部标签 URL
-                    except Exception:
-                        tmap = {}
-                    if not tmap:
-                        if not cdp_cookie.is_alive(handle):
-                            self.log("⚠ 并行登录: 抓取浏览器已关闭,剩余站点跳过。")
-                            for s in pool:
-                                results[s["host"]] = ""
-                                batch["login_done"] += 1
-                                batch["login_skip"] += 1
-                            pool = []
-                            for h in queue:
-                                results[h] = ""
-                                batch["login_done"] += 1
-                                batch["login_skip"] += 1
-                            queue = []
-                            break
-                        continue                       # 瞬时抖动: 下一拍重试
-                    now = time.time()
-                    for s in pool:                     # 到站判定
-                        ph = _url_host(tmap.get(s["tid"]) or "")
-                        if _host_match(ph, s["host"]):
-                            s["arrived"] = True
-                    # 活动检测节流:每标签最低 1.5s 一次, 一拍最多查 2 个(CDP 省调用)
-                    for s in sorted(pool, key=lambda x: x["act_t"])[:2]:
-                        if now - s["act_t"] < 1.5:
-                            break
-                        s["act_t"] = now
-                        try:
-                            ms = cdp_cookie.page_activity(handle, s["tid"])
-                        except Exception:
-                            ms = 0
-                        if ms and ms / 1000.0 > s["last_act"]:
-                            s["last_act"] = ms / 1000.0   # 页面内点击/输入 = 活动
-                    for s in list(pool):
-                        verdict = _tab_due(s["arrived"], s["idle"],
-                                           now - s["last_act"], now - s["opened_t"])
-                        if verdict != "wait" and now - s["act_t"] > 0.3:
-                            # 判定前补一次新鲜活动检测: 刚点击/输入过的标签不抢抓
-                            s["act_t"] = now
-                            try:
-                                ms = cdp_cookie.page_activity(handle, s["tid"])
-                            except Exception:
-                                ms = 0
-                            if ms and ms / 1000.0 > s["last_act"]:
-                                s["last_act"] = ms / 1000.0
-                            verdict = _tab_due(s["arrived"], s["idle"],
-                                               now - s["last_act"],
-                                               now - s["opened_t"])
-                        if verdict == "wait":
-                            continue
-                        ck = ""
-                        if verdict == "grab":
-                            try:
-                                allc = cdp_cookie.all_cookies(handle)
-                                ck = "; ".join(
-                                    "%s=%s" % (c["name"], c["value"])
-                                    for c in allc
-                                    if cdp_cookie._domain_matches(
-                                        s["host"], c.get("domain") or ""))
-                            except Exception:
-                                ck = ""
-                        cdp_cookie.close_tab(handle, s["tid"])
-                        pool.remove(s)
-                        batch["login_done"] += 1
-                        if ck:
-                            n = 0
-                            for u in batch["targets"][s["host"]]:
-                                cfg = dict(self._auth.get(u) or {})
-                                cfg["cookie"] = _merge_cookie_str(
-                                    cfg.get("cookie"), ck)
-                                self._auth[u] = cfg
-                                n += 1
-                            try:
-                                save_auth_state(self._auth)
-                                engine.set_auth(self._auth)
-                            except Exception:
-                                pass
-                            results[s["host"]] = ck
-                            batch["login_got"] += 1
-                            self.log("并行登录: 已保存 %s 的 Cookie(%d 个源)"
-                                     % (s["host"], n))
-                        else:
-                            results[s["host"]] = ""
-                            batch["login_skip"] += 1
-                            why = ("超时未到站(⚠ 页面不符或打不开),已跳过"
-                                   if verdict == "timeout"
-                                   else "未抓到 Cookie,已跳过")
-                            page = tmap.get(s["tid"]) or ""
-                            if verdict == "grab" and page:
-                                why += "(页面在 %s)" % page   # 便于诊断为何没抓到
-                            self.log("并行登录: %s %s" % (s["host"], why))
-            except Exception as e:                     # 任何异常不许带走整个批量
-                self.log("⚠ 并行登录扫异常(已收尾): %s" % e)
-                for s in pool:
-                    cdp_cookie.close_tab(handle, s["tid"])
-                    results.setdefault(s["host"], "")
-            for s in pool:                             # 收尾:关掉池内全部标签
-                cdp_cookie.close_tab(handle, s["tid"])
-            return results
+                     % (len(mgr.hosts), len(urls)))
+            mgr.launch()
 
         def toggle_pause():
-            batch["paused"] = not batch["paused"]
-            btn_bpause.config(text="继续自动" if batch["paused"] else "暂停自动")
-            if batch["paused"]:
+            if mgr.toggle_pause():
+                btn_bpause.config(text="继续自动")
                 _stat("已暂停:全部标签倒计时已冻结(标签保持打开),"
                       "点「继续自动」恢复。")
-
-        def batch_grab():
-            host = batch["hosts"][batch["idx"]]
-            auth_sess["phase"] = "capturing"
-            btn_fetch.config(state="disabled")
-            _stat("正在抓取 %s 的 Cookie…" % host)
-            handle = auth_sess["handle"]
-
-            def _grab():
-                try:
-                    if handle is None or not cdp_cookie.is_alive(handle):
-                        # 浏览器被手动关闭等 → 不中止批量, 重新打开当前站点
-                        auth_sess["handle"] = None
-                        self.log("批量: 检测到抓取浏览器已关闭,正在重新打开 %s" % host)
-                        _open_current()
-                        return
-                    auth_sess["pending"] = {
-                        "state": "captured",
-                        "cookie": cdp_cookie.fetch_cookies(handle, host)}
-                except Exception as e:
-                    auth_sess["pending"] = {"state": "error",
-                                            "msg": "抓取失败: %s" % e}
-
-            threading.Thread(target=_grab, daemon=True).start()
+            else:
+                btn_bpause.config(text="暂停自动")
 
         def batch_skip():
-            if batch.get("stage") in ("para", "login"):
-                _stat("并行阶段进行中, 不支持单站跳过;超时的站会自动跳过,"
-                      "也可点「结束批量」。", "#cc0000")
-                return
-            batch_next()
+            mgr.skip_site()
 
         def batch_stop():
-            if batch.get("stage") == "login":
+            if mgr.stage == "login":
                 # 并行登录扫:交给工作线程关池内标签后收尾, 已抓到的保留
-                batch["stop_req"] = True
+                mgr.request_stop()
                 btn_bstop.config(state="disabled")
                 _stat("正在收尾:关闭池内标签…")
                 return
             batch_finish("批量抓取已结束(已完成站点的 Cookie 保留)。")
 
         def on_fetch_click():
-            if batch["active"]:
-                if batch.get("stage") in ("para", "login"):
+            if mgr.active:
+                if mgr.stage in ("para", "login"):
                     return                    # 自动并行阶段无单站抓取语义
-                if auth_sess["phase"] == "launched":
-                    batch_grab()
+                if sess["phase"] == "launched":
+                    sess["phase"] = "capturing"
+                    btn_fetch.config(state="disabled")
+                    _stat("正在抓取 %s 的 Cookie…" % mgr.hosts[mgr.idx])
+                    mgr.grab_current()
                 return
             on_fetch()
 
         def refresh_list():
-            kw = var_filter.get().strip().lower()
             keep = {tbl.item(i, "values")[1] for i in tbl.selection()}  # 刷新后保住选中
             tbl.delete(*tbl.get_children())
             new_sel = []
-            for s in self.sources:
-                nm = (s.get("bookSourceName") or "").strip()
-                u = (s.get("bookSourceUrl") or "").strip()
-                if kw and kw not in nm.lower() and kw not in u.lower():
-                    continue
-                mark = "● " if u in self._auth else ""
-                iid = tbl.insert("", "end", values=(mark + nm, u))
+            for marked, u in core_auth.filter_sources(self.sources, self._auth,
+                                                      var_filter.get()):
+                iid = tbl.insert("", "end", values=(marked, u))
                 if u in keep:
                     new_sel.append(iid)
             if new_sel:
@@ -2455,21 +1379,6 @@ class App:
                 lbl_cur.config(text="未选中 · 在上方点选书源(可批量)",
                                foreground="#888")
 
-        def _parse_header(raw):
-            """header 输入解析:JSON 优先,失败回退 ast(容错单引号/无引号写法)。"""
-            if not raw:
-                return {}
-            header = None
-            try:
-                header = json.loads(raw)
-            except Exception:
-                try:
-                    import ast
-                    header = ast.literal_eval(raw)
-                except Exception:
-                    header = None
-            return header if isinstance(header, dict) else None
-
         def save_sel():
             sel = sorted(self._auth_kit.get())
             if not sel:
@@ -2482,38 +1391,23 @@ class App:
             header = {}
             raw = var_hd.get().strip()
             if raw:
-                header = _parse_header(raw)
+                header = core_auth.parse_header(raw)
                 if header is None:
                     messagebox.showerror(
                         "登录头", "header 不是合法的 {\"键\": \"值\"} JSON,未保存。",
                         parent=win)
                     return
             urls = {tbl.item(i, "values")[1] for i in sel}
-            if cookie or header:
-                item = {}
-                if cookie:
-                    item["cookie"] = cookie
-                if header:
-                    item["header"] = header
-                for u in urls:
-                    self._auth[u] = dict(item)
-            else:
-                for u in urls:                   # 两项都空 = 移除所选源的配置
-                    self._auth.pop(u, None)
-            save_auth_state(self._auth)
-            engine.set_auth(self._auth)
+            core_auth.apply_to_urls(self._auth, urls, cookie, header)
+            core_auth.persist(self._auth)
             refresh_list()
             self.log("登录头已保存: %d 个源" % len(urls))
 
         def del_sel():
-            sel = self._auth_kit.get()
-            urls = {tbl.item(i, "values")[1] for i in sel}
-            removed = [u for u in urls if u in self._auth]
-            for u in removed:
-                self._auth.pop(u, None)
+            urls = {tbl.item(i, "values")[1] for i in self._auth_kit.get()}
+            removed = core_auth.remove_urls(self._auth, urls)
             if removed:
-                save_auth_state(self._auth)
-                engine.set_auth(self._auth)
+                core_auth.persist(self._auth)
                 refresh_list()
                 self.log("已删除 %d 个源的登录头" % len(removed))
 
@@ -2522,9 +1416,8 @@ class App:
                 return
             if messagebox.askyesno("登录头", "确定清空全部 %d 个源的登录头?"
                                    % len(self._auth), parent=win):
-                self._auth = {}
-                save_auth_state(self._auth)
-                engine.set_auth(self._auth)
+                self._auth.clear()          # 原地清空:mgr/engine 持同一 dict 引用
+                core_auth.persist(self._auth)
                 refresh_list()
                 self.log("已清空全部登录头。")
 
@@ -2867,6 +1760,8 @@ class App:
                               notify=True)
 
     # ---------------------------------------------------- 下载 ---------------
+    # 下载编排已剥离至 core/download.py(download_run):成功/失败清单由
+    # dldone/dlcancel 事件结构化上报,UI 只负责弹窗展示与标红。
     def start_download(self):
         if self.busy_dl or self.busy_verify:
             return
@@ -2902,8 +1797,13 @@ class App:
         self.lbl_dl.config(text="准备下载… %d 本 · 格式 %s" % (len(hits), fmt.upper()))
         self.log("开始下载 %d 本 · 模式[%s] · 格式[%s]" %
                  (len(hits), "下载单一" if mode == "single" else "合并下载", fmt.upper()))
-        threading.Thread(target=self._do_download,
+        threading.Thread(target=self._run_download,
                          args=(hits, out, mode, fmt, idxs), daemon=True).start()
+
+    def _run_download(self, hits, out, mode, fmt, hit_idx=None):
+        """下载线程入口:组装注入参数调 core.download.download_run。"""
+        core_download.download_run(hits, out, mode, fmt, emit=self._report,
+                                   stop=self.stop_dl, hit_idx=hit_idx)
 
     def _mark_blocked(self, fail_list):
         """把下载失败(被封/需登录/空目录)的行标红,书源列加 ✖ 前缀。"""
@@ -2915,90 +1815,6 @@ class App:
             if len(vals) == 5 and not vals[4].startswith("✖"):
                 vals[4] = "✖ " + vals[4]
             self.tree.item(iid, values=vals, tags=(str(idx), "blocked"))
-
-    def _export_one(self, book, out, fmt, batch):
-        """按选定格式导出单一格式。batch=True 时同名不同源自动加书源后缀,避免覆盖。"""
-        ext = "txt" if fmt == "txt" else "epub"
-        suffix = ""
-        if batch and (Path(out) / ("%s.%s" % (export.safe_name(book["title"]), ext))).exists():
-            suffix = "_" + export.safe_name(book.get("source", ""))
-        if fmt == "txt":
-            return export.export_txt(book, out, suffix)
-        return export.export_epub(book, out, suffix)
-
-    def _try_one(self, h, prog, out, fmt, batch):
-        """探测并下载一本书。返回 (book, path) 或抛异常。被封源直接抛 RuntimeError。
-
-        探测(目录)阶段限时:单请求 6s、总 15s——半死源快速失败,
-        "下载单一"模式能尽快换下一个候选,不会长时间停在探测上。
-        """
-        srcname = h["source"].get("bookSourceName", "?")
-        # P1 元数据补全:详情页按语义标签抽取,比搜索列表干净;失败回退搜索值。
-        # 只影响导出文件的书名/作者/分类/最新章节,不影响该行选中(键=源+URL)。
-        try:
-            info = engine.fetch_book_info(h["source"], h["book_url"], timeout=6)
-        except Exception:
-            info = {}
-        if info:
-            for k in ("name", "author", "kind", "last_chapter"):
-                if info.get(k):
-                    h[k] = info[k]
-            self.log("↻ 元数据已按详情页修正: [%s]《%s》" % (srcname, h["name"]))
-        toc = engine.fetch_toc(h["source"], h["book_url"], stop=self.stop_dl,
-                               timeout=6, deadline=time.time() + 15)
-        if not toc:
-            raise RuntimeError("目录为空(书源被封或需登录)")
-        book = engine.load_book(h, toc=toc, on_progress=prog, stop=self.stop_dl,
-                                workers=DOWNLOAD_WORKERS)
-        if self.stop_dl.is_set():
-            raise RuntimeError("已取消")
-        if book["ok"] == 0:
-            raise RuntimeError("正文 0/%d 章成功(书源被封)" % book["total"])
-        path = self._export_one(book, out, fmt, batch)
-        self.log("✔ 《%s》 %d/%d 章 · 源[%s] → %s" %
-                 (book["title"], book["ok"], book["total"], srcname, path))
-        return book, path
-
-    def _do_download(self, hits, out, mode, fmt, hit_idx=None):
-        """hit_idx:hits 各元素在 self.hits 中的真实下标(用于标红失败行)。"""
-        try:
-            self._do_download_inner(hits, out, mode, fmt, hit_idx)
-        except Exception:
-            # 下载线程的任何异常都必须可见(pythonw 下 stderr 不可见,
-            # 否则表现为"永远停在准备下载")
-            import traceback
-            self.q.put(("log", "✘ 下载线程异常: %s" % traceback.format_exc()[-500:]))
-            self.q.put(("dlerr", "下载线程异常,已终止: %s" % traceback.format_exc()[-200:]))
-
-    def _do_download_inner(self, hits, out, mode, fmt, hit_idx=None):
-        """hit_idx:hits 各元素在 self.hits 中的真实下标(用于标红失败行)。"""
-        n = len(hits)
-        hit_idx = hit_idx or list(range(n))
-
-        def prog(done, total, msg):
-            self.q.put(("dlprog", (done, total, msg)))
-
-        ok_list, fail_list = [], []
-        for bi, h in enumerate(hits):
-            if self.stop_dl.is_set():
-                break
-            srcname = h["source"].get("bookSourceName", "?")
-            self.q.put(("dlbook", (bi, n, h["name"], srcname,
-                                   "探测目录(超时 6s,失败自动换源)…")))
-            try:
-                book, path = self._try_one(h, prog, out, fmt, batch=(mode == "batch"))
-            except Exception as e:
-                self.q.put(("log", "✘ 跳过[%s]《%s》: %s" % (srcname, h["name"], e)))
-                fail_list.append((hit_idx[bi], h["name"], srcname, str(e)))
-                continue              # 被封/失败 → 单一模式换下一个,合并模式继续下一本
-            ok_list.append((book, path))
-            self.q.put(("dlone", (book, path, bi, n)))
-            if mode == "single":
-                break                 # 单一模式:只保留第一本成功的,其余丢弃
-        if self.stop_dl.is_set():
-            self.q.put(("dlcancel", (ok_list, fail_list)))
-        else:
-            self.q.put(("dldone", (mode, fmt, ok_list, fail_list)))
 
     # ------------------------------------------------------- 事件泵 ----------
     def _drain(self):
@@ -3030,13 +1846,8 @@ class App:
             self.lbl_progress.config(text=payload)
         elif kind == "hit":
             h = payload
-            # 增量上屏(保持引擎去重语义:同一URL只入一次)
-            if any(x["book_url"] == h["book_url"] and
-                   x["source"]["bookSourceName"] == h["source"]["bookSourceName"]
-                   for x in self.hits):
-                return
-            if self.var_rel.get() and not self._relevant(h):
-                return                                    # 无关结果不上屏
+            # 增量上屏:去重与「只看相关结果」过滤已上移至 core.search.search_run
+            #(keep 谓词),这里只渲染 —— 收到即入列。
             self.hits.append(h)
             self._insert_hit_row()
             self.lbl_hits.config(text="搜索中… 已返回 %d 条" % len(self.hits))
