@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Page
+    x:Class="NovelDownloader.Views.AuthPage"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+    xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+    mc:Ignorable="d"
+    Background="Transparent">
+
+    <StackPanel Margin="{ThemeResource PageMargin}" Spacing="16">
+        <TextBlock Text="登录头管理"
+                   FontFamily="{ThemeResource DisplayFontFamily}"
+                   FontSize="{ThemeResource FontSizeTitleLarge}"
+                   FontWeight="SemiBold"
+                   Foreground="{ThemeResource TextPrimaryBrush}" />
+
+        <TextBlock Text="管理站点登录 Cookie, 支持单站抓取与批量抓取。M0 为占位页, M4 实现 (旧版最挤窗口的重设计)。"
+                   TextWrapping="Wrap"
+                   Foreground="{ThemeResource TextSecondaryBrush}" />
+
+        <Border Background="{ThemeResource CardBrush}"
+                BorderBrush="{ThemeResource BorderBrush}"
+                BorderThickness="1"
+                CornerRadius="{ThemeResource CardCornerRadius}"
+                Padding="{ThemeResource CardPadding}">
+            <StackPanel Spacing="12">
+                <StackPanel Orientation="Horizontal" Spacing="12">
+                    <FontIcon Glyph="&#xE72E;" FontSize="24" Foreground="{ThemeResource AccentBrush}" />
+                    <TextBlock Text="站点列表"
+                               VerticalAlignment="Center"
+                               FontWeight="SemiBold"
+                               Foreground="{ThemeResource TextPrimaryBrush}" />
+                </StackPanel>
+                <TextBlock Text="(占位) 主从布局: 左站点列表 / 右 Cookie 详情 + 抓取控制台"
+                           Foreground="{ThemeResource TextTertiaryBrush}" />
+                <Button Content="抓取选中站点" IsEnabled="False" />
+            </StackPanel>
+        </Border>
+    </StackPanel>
+</Page>

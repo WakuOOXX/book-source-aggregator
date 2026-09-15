@@ -36,3 +36,13 @@ verify_sources.py
 启动下载器.bat
 _ref/
 .mimosa/
+
+# ---- WinUI 3 前端 (frontends/winui, M0 起) ----
+# 先放回前端单测工程(根级 `tests/` 会误伤它), 注意顺序: 后出现的规则优先。
+!frontends/winui/tests/
+!frontends/winui/tests/**
+# 再统一忽略构建产物(含前面的 tests/** 之下), 保证 bin/obj 不入库。
+frontends/**/bin/
+frontends/**/obj/
+frontends/**/.vs/
+frontends/**/*.user

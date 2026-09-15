@@ -1,0 +1,190 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  设计令牌 —— 小说下载器 WinUI 3 前端
+  来源: 计划 §5.1 (Light 准入值 = 现 theme_fluent.py 映射; Dark 新定),
+        校准自 theme_fluent.py 与 样本/07-fluent-win11.html。
+
+  规则: 控件一律绑 {ThemeResource ...}, 禁硬编码色。
+  用法:  <TextBlock Foreground="{ThemeResource TextPrimaryBrush}" />
+         <Border Background="{ThemeResource CardBrush}" CornerRadius="{ThemeResource OverlayCornerRadius}" />
+-->
+<ResourceDictionary
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+
+    <ResourceDictionary.ThemeDictionaries>
+
+        <!-- ============================ Light ============================ -->
+        <ResourceDictionary x:Key="Light">
+            <!-- 强调色 -->
+            <Color x:Key="AccentColor">#0067c0</Color>
+            <Color x:Key="AccentHoverColor">#1975c5</Color>
+            <Color x:Key="AccentPressedColor">#005ba1</Color>
+            <Color x:Key="AccentLightColor">#e6f1fa</Color>
+            <Color x:Key="AccentTextColor">#0b4d8c</Color>
+
+            <!-- 表面 -->
+            <Color x:Key="BackgroundColor">#f3f6fa</Color>
+            <Color x:Key="BackgroundDeepColor">#eef1f6</Color>
+            <Color x:Key="CardColor">#ffffff</Color>
+            <Color x:Key="CardSoftColor">#f9fbfd</Color>
+            <Color x:Key="BorderColor">#e4e8ee</Color>
+            <Color x:Key="BorderStrongColor">#d5d9e0</Color>
+
+            <!-- 文字三级 -->
+            <Color x:Key="TextPrimaryColor">#1b1b1b</Color>
+            <Color x:Key="TextSecondaryColor">#616161</Color>
+            <Color x:Key="TextTertiaryColor">#8b929e</Color>
+            <Color x:Key="TextDisabledColor">#a7adb8</Color>
+            <Color x:Key="TextOnAccentColor">#ffffff</Color>
+
+            <!-- 语义色 -->
+            <Color x:Key="DangerColor">#c42b1c</Color>
+            <Color x:Key="DangerLightColor">#fdf3f2</Color>
+            <Color x:Key="SuccessColor">#0f7b3d</Color>
+            <Color x:Key="WarningColor">#9d5d00</Color>
+
+            <!-- 行/选中/其它 -->
+            <Color x:Key="AltRowColor">#f2f6fb</Color>
+            <Color x:Key="SelectedRowColor">#e6f1fa</Color>
+            <Color x:Key="RubberBandColor">#0067c0</Color>
+            <Color x:Key="ScrollThumbColor">#a9b0ba</Color>
+            <Color x:Key="ScrollThumbHoverColor">#7b828d</Color>
+            <Color x:Key="SelectionTextColor">#cfe3f5</Color>
+        </ResourceDictionary>
+
+        <!-- ============================ Dark ============================= -->
+        <ResourceDictionary x:Key="Dark">
+            <Color x:Key="AccentColor">#4c9fe0</Color>
+            <Color x:Key="AccentHoverColor">#62b0ec</Color>
+            <Color x:Key="AccentPressedColor">#3f8cc7</Color>
+            <Color x:Key="AccentLightColor">#1a3a52</Color>
+            <Color x:Key="AccentTextColor">#a8d4f5</Color>
+
+            <Color x:Key="BackgroundColor">#202020</Color>
+            <Color x:Key="BackgroundDeepColor">#1a1a1a</Color>
+            <Color x:Key="CardColor">#2b2b2b</Color>
+            <Color x:Key="CardSoftColor">#323232</Color>
+            <Color x:Key="BorderColor">#3d3d3d</Color>
+            <Color x:Key="BorderStrongColor">#4a4a4a</Color>
+
+            <Color x:Key="TextPrimaryColor">#ffffff</Color>
+            <Color x:Key="TextSecondaryColor">#c5c5c5</Color>
+            <Color x:Key="TextTertiaryColor">#9a9a9a</Color>
+            <Color x:Key="TextDisabledColor">#6d6d6d</Color>
+            <Color x:Key="TextOnAccentColor">#10222f</Color>
+
+            <Color x:Key="DangerColor">#f1707b</Color>
+            <Color x:Key="DangerLightColor">#3a2224</Color>
+            <Color x:Key="SuccessColor">#6ccb5f</Color>
+            <Color x:Key="WarningColor">#e0a94a</Color>
+
+            <Color x:Key="AltRowColor">#252a2f</Color>
+            <Color x:Key="SelectedRowColor">#1a3a52</Color>
+            <Color x:Key="RubberBandColor">#4c9fe0</Color>
+            <Color x:Key="ScrollThumbColor">#5a5a5a</Color>
+            <Color x:Key="ScrollThumbHoverColor">#7a7a7a</Color>
+            <Color x:Key="SelectionTextColor">#2b5270</Color>
+        </ResourceDictionary>
+
+        <!-- Default 指向 Light -->
+        <ResourceDictionary x:Key="Default">
+            <Color x:Key="AccentColor">#0067c0</Color>
+            <Color x:Key="AccentHoverColor">#1975c5</Color>
+            <Color x:Key="AccentPressedColor">#005ba1</Color>
+            <Color x:Key="AccentLightColor">#e6f1fa</Color>
+            <Color x:Key="AccentTextColor">#0b4d8c</Color>
+
+            <Color x:Key="BackgroundColor">#f3f6fa</Color>
+            <Color x:Key="BackgroundDeepColor">#eef1f6</Color>
+            <Color x:Key="CardColor">#ffffff</Color>
+            <Color x:Key="CardSoftColor">#f9fbfd</Color>
+            <Color x:Key="BorderColor">#e4e8ee</Color>
+            <Color x:Key="BorderStrongColor">#d5d9e0</Color>
+
+            <Color x:Key="TextPrimaryColor">#1b1b1b</Color>
+            <Color x:Key="TextSecondaryColor">#616161</Color>
+            <Color x:Key="TextTertiaryColor">#8b929e</Color>
+            <Color x:Key="TextDisabledColor">#a7adb8</Color>
+            <Color x:Key="TextOnAccentColor">#ffffff</Color>
+
+            <Color x:Key="DangerColor">#c42b1c</Color>
+            <Color x:Key="DangerLightColor">#fdf3f2</Color>
+            <Color x:Key="SuccessColor">#0f7b3d</Color>
+            <Color x:Key="WarningColor">#9d5d00</Color>
+
+            <Color x:Key="AltRowColor">#f2f6fb</Color>
+            <Color x:Key="SelectedRowColor">#e6f1fa</Color>
+            <Color x:Key="RubberBandColor">#0067c0</Color>
+            <Color x:Key="ScrollThumbColor">#a9b0ba</Color>
+            <Color x:Key="ScrollThumbHoverColor">#7b828d</Color>
+            <Color x:Key="SelectionTextColor">#cfe3f5</Color>
+        </ResourceDictionary>
+    </ResourceDictionary.ThemeDictionaries>
+
+    <!-- ===================== 画刷 (引用上面随主题切换的 Color) ===================== -->
+    <SolidColorBrush x:Key="AccentBrush" Color="{ThemeResource AccentColor}" />
+    <SolidColorBrush x:Key="AccentHoverBrush" Color="{ThemeResource AccentHoverColor}" />
+    <SolidColorBrush x:Key="AccentPressedBrush" Color="{ThemeResource AccentPressedColor}" />
+    <SolidColorBrush x:Key="AccentLightBrush" Color="{ThemeResource AccentLightColor}" />
+    <SolidColorBrush x:Key="AccentTextBrush" Color="{ThemeResource AccentTextColor}" />
+
+    <SolidColorBrush x:Key="PageBackgroundBrush" Color="{ThemeResource BackgroundColor}" />
+    <SolidColorBrush x:Key="BackgroundDeepBrush" Color="{ThemeResource BackgroundDeepColor}" />
+    <SolidColorBrush x:Key="CardBrush" Color="{ThemeResource CardColor}" />
+    <SolidColorBrush x:Key="CardSoftBrush" Color="{ThemeResource CardSoftColor}" />
+    <SolidColorBrush x:Key="BorderBrush" Color="{ThemeResource BorderColor}" />
+    <SolidColorBrush x:Key="BorderStrongBrush" Color="{ThemeResource BorderStrongColor}" />
+
+    <SolidColorBrush x:Key="TextPrimaryBrush" Color="{ThemeResource TextPrimaryColor}" />
+    <SolidColorBrush x:Key="TextSecondaryBrush" Color="{ThemeResource TextSecondaryColor}" />
+    <SolidColorBrush x:Key="TextTertiaryBrush" Color="{ThemeResource TextTertiaryColor}" />
+    <SolidColorBrush x:Key="TextDisabledBrush" Color="{ThemeResource TextDisabledColor}" />
+    <SolidColorBrush x:Key="TextOnAccentBrush" Color="{ThemeResource TextOnAccentColor}" />
+
+    <SolidColorBrush x:Key="DangerBrush" Color="{ThemeResource DangerColor}" />
+    <SolidColorBrush x:Key="DangerLightBrush" Color="{ThemeResource DangerLightColor}" />
+    <SolidColorBrush x:Key="SuccessBrush" Color="{ThemeResource SuccessColor}" />
+    <SolidColorBrush x:Key="WarningBrush" Color="{ThemeResource WarningColor}" />
+
+    <SolidColorBrush x:Key="AltRowBrush" Color="{ThemeResource AltRowColor}" />
+    <SolidColorBrush x:Key="SelectedRowBrush" Color="{ThemeResource SelectedRowColor}" />
+    <SolidColorBrush x:Key="RubberBandBrush" Color="{ThemeResource RubberBandColor}" />
+    <SolidColorBrush x:Key="SelectionTextBrush" Color="{ThemeResource SelectionTextColor}" />
+
+    <!-- ===================== 字体 ===================== -->
+    <!-- 正文: Segoe UI Variable Text, 中文回退 Microsoft YaHei UI -->
+    <FontFamily x:Key="BodyFontFamily">Segoe UI Variable Text, Microsoft YaHei UI, Segoe UI</FontFamily>
+    <FontFamily x:Key="DisplayFontFamily">Segoe UI Variable Display, Microsoft YaHei UI, Segoe UI</FontFamily>
+    <!-- 日志/代码: Cascadia Mono, 回退 Consolas (注意: FontFamily 回退用逗号, 不带引号) -->
+    <FontFamily x:Key="MonoFontFamily">Cascadia Mono, Consolas</FontFamily>
+
+    <!-- ===================== 排版 ===================== -->
+    <x:Double x:Key="FontSizeBody">14</x:Double>
+    <x:Double x:Key="FontSizeCaption">12</x:Double>
+    <x:Double x:Key="FontSizeTitle">20</x:Double>
+    <x:Double x:Key="FontSizeTitleLarge">28</x:Double>
+    <x:Double x:Key="FontSizeMono">13</x:Double>
+    <x:Double x:Key="FontSizeSearchBox">16</x:Double>
+
+    <!-- ===================== 间距 (4px 网格) ===================== -->
+    <x:Double x:Key="SpacingXs">4</x:Double>
+    <x:Double x:Key="SpacingS">8</x:Double>
+    <x:Double x:Key="SpacingM">12</x:Double>
+    <x:Double x:Key="SpacingL">16</x:Double>
+    <x:Double x:Key="SpacingXl">24</x:Double>
+
+    <Thickness x:Key="PageMargin">24,16,24,24</Thickness>
+    <Thickness x:Key="CardPadding">16</Thickness>
+    <Thickness x:Key="ControlGap">0,0,0,12</Thickness>
+
+    <!-- ===================== 形状 ===================== -->
+    <!-- 卡片/弹层 8px, 按钮/输入框 4px —— 用系统默认令牌, 不另造轮子 -->
+    <CornerRadius x:Key="CardCornerRadius">8</CornerRadius>
+    <CornerRadius x:Key="ControlCornerRadiusSmall">4</CornerRadius>
+
+    <!-- 常用尺寸 -->
+    <x:Double x:Key="SearchBoxHeight">48</x:Double>
+    <x:Double x:Key="ResultRowHeight">56</x:Double>
+    <x:Double x:Key="TitleBarHeight">48</x:Double>
+</ResourceDictionary>

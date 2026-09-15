@@ -1,0 +1,37 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <!-- 与主工程同 TFM/RID, 才能引用 WinUI 工程并解析 WindowsAppSDK 引用。 -->
+    <TargetFramework>net8.0-windows10.0.19041.0</TargetFramework>
+    <TargetPlatformMinVersion>10.0.17763.0</TargetPlatformMinVersion>
+    <Platforms>x64</Platforms>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <LangVersion>latest</LangVersion>
+
+    <!-- 测试宿主不涉及 XAML/打包, 关闭依赖 VS 的工具链 (与主工程同因: 无 VS/无独立 Windows SDK)。 -->
+    <EnableMsixTooling>false</EnableMsixTooling>
+    <EnableCoreMrtTooling>false</EnableCoreMrtTooling>
+
+    <IsPackable>false</IsPackable>
+    <IsTestProject>true</IsTestProject>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="coverlet.collector" Version="6.0.0" />
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.8.0" />
+    <PackageReference Include="xunit" Version="2.5.3" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="2.5.3" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- VM/事件解析层是纯 C# (不碰 UI 线程), 可直接引用主工程做单测。 -->
+    <ProjectReference Include="..\..\src\NovelDownloader\NovelDownloader.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Using Include="Xunit" />
+  </ItemGroup>
+
+</Project>

@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Page
+    x:Class="NovelDownloader.Views.SourcesPage"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:muxc="using:Microsoft.UI.Xaml.Controls"
+    xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+    xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+    mc:Ignorable="d"
+    Background="Transparent">
+
+    <StackPanel Margin="{ThemeResource PageMargin}" Spacing="16">
+        <TextBlock Text="书源管理"
+                   FontFamily="{ThemeResource DisplayFontFamily}"
+                   FontSize="{ThemeResource FontSizeTitleLarge}"
+                   FontWeight="SemiBold"
+                   Foreground="{ThemeResource TextPrimaryBrush}" />
+
+        <TextBlock Text="校验书源文件、查看有效/失效源、移出或添加书源。M0 为占位页, M3 实现。"
+                   TextWrapping="Wrap"
+                   Foreground="{ThemeResource TextSecondaryBrush}" />
+
+        <Border Background="{ThemeResource CardBrush}"
+                BorderBrush="{ThemeResource BorderBrush}"
+                BorderThickness="1"
+                CornerRadius="{ThemeResource CardCornerRadius}"
+                Padding="{ThemeResource CardPadding}">
+            <StackPanel Spacing="12">
+                <StackPanel Orientation="Horizontal" Spacing="12">
+                    <FontIcon Glyph="&#xE8F1;" FontSize="24" Foreground="{ThemeResource AccentBrush}" />
+                    <TextBlock Text="书源文件"
+                               VerticalAlignment="Center"
+                               FontWeight="SemiBold"
+                               Foreground="{ThemeResource TextPrimaryBrush}" />
+                </StackPanel>
+                <TextBlock Text="(占位) 文件卡片列表 / 校验进度环 / 有效 · 失效计数"
+                           Foreground="{ThemeResource TextTertiaryBrush}" />
+                <muxc:ProgressBar IsIndeterminate="False" Value="0" />
+                <Button Content="开始校验" IsEnabled="False" />
+            </StackPanel>
+        </Border>
+    </StackPanel>
+</Page>

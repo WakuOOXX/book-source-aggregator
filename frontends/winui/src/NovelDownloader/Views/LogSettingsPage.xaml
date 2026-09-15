@@ -1,0 +1,61 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Page
+    x:Class="NovelDownloader.Views.LogSettingsPage"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+    xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+    mc:Ignorable="d"
+    Background="Transparent">
+
+    <StackPanel Margin="{ThemeResource PageMargin}" Spacing="16">
+        <TextBlock Text="日志与设置"
+                   FontFamily="{ThemeResource DisplayFontFamily}"
+                   FontSize="{ThemeResource FontSizeTitleLarge}"
+                   FontWeight="SemiBold"
+                   Foreground="{ThemeResource TextPrimaryBrush}" />
+
+        <TextBlock Text="日志面板与全局设置 (主题 / 日志级别 / 目录)。M0 为占位页, M5 完善。"
+                   TextWrapping="Wrap"
+                   Foreground="{ThemeResource TextSecondaryBrush}" />
+
+        <Border Background="{ThemeResource CardBrush}"
+                BorderBrush="{ThemeResource BorderBrush}"
+                BorderThickness="1"
+                CornerRadius="{ThemeResource CardCornerRadius}"
+                Padding="{ThemeResource CardPadding}">
+            <StackPanel Spacing="12">
+                <TextBlock Text="日志"
+                           FontWeight="SemiBold"
+                           Foreground="{ThemeResource TextPrimaryBrush}" />
+                <Border Background="{ThemeResource BackgroundDeepBrush}"
+                        BorderBrush="{ThemeResource BorderBrush}"
+                        BorderThickness="1"
+                        CornerRadius="4"
+                        Height="160">
+                    <TextBlock Margin="12"
+                               Text="(占位) 日志输出区 · Cascadia Mono 13px"
+                               FontFamily="{ThemeResource MonoFontFamily}"
+                               FontSize="{ThemeResource FontSizeMono}"
+                               Foreground="{ThemeResource TextTertiaryBrush}" />
+                </Border>
+            </StackPanel>
+        </Border>
+
+        <Border Background="{ThemeResource CardBrush}"
+                BorderBrush="{ThemeResource BorderBrush}"
+                BorderThickness="1"
+                CornerRadius="{ThemeResource CardCornerRadius}"
+                Padding="{ThemeResource CardPadding}">
+            <StackPanel Spacing="12">
+                <TextBlock Text="外观"
+                           FontWeight="SemiBold"
+                           Foreground="{ThemeResource TextPrimaryBrush}" />
+                <StackPanel Orientation="Horizontal" Spacing="10">
+                    <TextBlock Text="主题" VerticalAlignment="Center" Foreground="{ThemeResource TextSecondaryBrush}" />
+                    <ComboBox x:Name="ThemeCombo" MinWidth="160" PlaceholderText="跟随系统" AutomationProperties.Name="主题" />
+                </StackPanel>
+            </StackPanel>
+        </Border>
+    </StackPanel>
+</Page>

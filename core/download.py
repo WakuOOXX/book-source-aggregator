@@ -55,7 +55,7 @@ def try_one(h, prog, out, fmt, batch, *, emit, stop):
     if book["ok"] == 0:
         raise RuntimeError("正文 0/%d 章成功(书源被封)" % book["total"])
     path = export_one(book, out, fmt, batch)
-    emit(("log", "✔ 《%s》 %d/%d 章 · 源[%s] → %s" %
+    emit(("log", "《%s》 %d/%d 章 · 源[%s] → %s" %
           (book["title"], book["ok"], book["total"], srcname, path)))
     return book, path
 

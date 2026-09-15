@@ -1,0 +1,58 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <!-- WinUI 3 unpackaged (免 MSIX) 桌面应用, 仅用 dotnet CLI 构建 (无 VS / 无独立 Windows SDK)。 -->
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows10.0.19041.0</TargetFramework>
+    <TargetPlatformMinVersion>10.0.17763.0</TargetPlatformMinVersion>
+    <RootNamespace>NovelDownloader</RootNamespace>
+    <AssemblyName>NovelDownloader</AssemblyName>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <Platforms>x64</Platforms>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <UseWinUI>true</UseWinUI>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>latest</LangVersion>
+
+    <!-- 非打包 / 自包含 Windows App SDK 运行时 -->
+    <WindowsPackageType>None</WindowsPackageType>
+    <WindowsAppSDKSelfContained>true</WindowsAppSDKSelfContained>
+
+    <!--
+      PRI 生成: 无 VS / 无独立 Windows SDK 环境下的正确解药。
+      WinAppSDK 自带的 MrtCore.PriGen.targets 会引用 VS 专有的
+      $(AppxMSBuildToolsPath)\Microsoft.Build.Packaging.Pri.Tasks.dll (本机不存在),
+      因此关闭它 (EnableCoreMrtTooling=false), 改由 NuGet 包
+      Microsoft.Windows.SDK.BuildTools.MSIX 提供的跨平台 MSBuild 任务
+      (tools/net6.0/Microsoft.Windows.SDK.BuildTools.MSIX.dll) 生成 resources.pri。
+      该包的工具链通过 EnableMsixTooling=true 激活 (MsixPackageSupport)。
+    -->
+    <EnableMsixTooling>true</EnableMsixTooling>
+    <EnableCoreMrtTooling>false</EnableCoreMrtTooling>
+    <!--
+      WinAppSDK 1.7 自带一份同名 MSIX 工具链 (Microsoft.Build.Msix.*), 它通过
+      CustomBeforeMicrosoftCommonTargets 在 targets 阶段把 MsixTaskAssemblyLocation
+      指向 WinAppSDK\tools\net6.0 (其中只有 Microsoft.Build.Msix.dll)。该属性的赋值都带
+      '==''' 条件, 因此在这里 (评估阶段) 显式钉到 BuildTools.MSIX 包自带的跨平台任务目录,
+      让 WinAppSDK 与 BuildTools.MSIX 两处赋值都跳过, 任务程序集解析为包内实际存在的
+      tools\net6.0\Microsoft.Windows.SDK.BuildTools.MSIX.dll, 不再出现混合出的不存在路径。
+    -->
+    <MsixTaskAssemblyLocation>$(PkgMicrosoft_Windows_SDK_BuildTools_MSIX)\tools\net6.0\</MsixTaskAssemblyLocation>
+
+    <!--
+      非打包 (WindowsPackageType=None) 的 WinUI 3 应用, 运行时 MRM/MRT 在 exe 同目录查找
+      固定名称 resources.pri。BuildTools.MSIX 包内 Packaging.targets 在评估阶段会把
+      ProjectPriFileName 抢先设为 $(TargetName).pri, 使 Pri.targets 里基于
+      _GenMainResourcePri 的 resources.pri 分支失效。这里显式钉住 resources.pri
+      (包内所有赋值都带 '==''' 守卫, 显式值优先), 保证产出 exe 可加载的 PRI。
+    -->
+    <ProjectPriFileName>resources.pri</ProjectPriFileName>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.WindowsAppSDK" Version="1.7.260224002" />
+    <PackageReference Include="Microsoft.Windows.SDK.BuildTools.MSIX" Version="1.7.260610101" />
+  </ItemGroup>
+
+</Project>

@@ -25,6 +25,7 @@ from core import mem as core_mem
 from core import auth_manager as core_auth
 from selpolicy import (MIN_DRAG, DOUBLE_MS, apply_click, apply_range,
                        apply_rubber, restore_filter)
+import theme_fluent as theme   # UI 层专用:Win11 Fluent 主题(不得进 core/)
 
 try:                                       # 校验自签名站时不刷 InsecureRequestWarning
     from urllib3 import disable_warnings
@@ -78,7 +79,7 @@ class DownloadDialog:
         frm.pack(fill="both", expand=True)
 
         ttk.Label(frm, text="已选中 %d 本书,请选择下载方式:" % n,
-                  font=("Microsoft YaHei UI", 9, "bold")).grid(
+                  font=theme.FONT_UI_BOLD).grid(
             row=0, column=0, columnspan=2, sticky="w", pady=(0, 8))
 
         self.mode = tk.StringVar(value=default_mode)
@@ -86,13 +87,13 @@ class DownloadDialog:
                         variable=self.mode, value="single").grid(row=1, column=0, sticky="nw")
         ttk.Label(frm, text="按顺序探测选中的书源,自动跳过被封/需登录的,\n"
                            "只用第一本能成功下载的源,其余丢弃。",
-                  foreground="#555", justify="left").grid(row=1, column=1, sticky="w")
+                  foreground=theme.TEXT2, justify="left").grid(row=1, column=1, sticky="w")
 
         ttk.Radiobutton(frm, text="合并下载",
                         variable=self.mode, value="batch").grid(row=2, column=0, sticky="nw", pady=(8, 0))
         ttk.Label(frm, text="选中的每一本都下载,各自导出为独立文件。\n"
                             "被封的源会跳过并在日志中标红。",
-                  foreground="#555", justify="left").grid(row=2, column=1, sticky="w", pady=(8, 0))
+                  foreground=theme.TEXT2, justify="left").grid(row=2, column=1, sticky="w", pady=(8, 0))
 
         ttk.Separator(frm, orient="horizontal").grid(row=3, column=0, columnspan=2,
                                                      sticky="ew", pady=12)
@@ -107,7 +108,8 @@ class DownloadDialog:
         btns = ttk.Frame(frm)
         btns.grid(row=6, column=0, columnspan=2, sticky="e", pady=(14, 0))
         ttk.Button(btns, text="取消", command=self._cancel, width=8).pack(side="right", padx=(8, 0))
-        ttk.Button(btns, text="开始下载", command=self._ok, width=10).pack(side="right")
+        ttk.Button(btns, text="开始下载", command=self._ok, width=10,
+                   style=theme.ST_ACCENT).pack(side="right")
 
         top.update_idletasks()
         w, h = top.winfo_width(), top.winfo_height()
@@ -133,6 +135,7 @@ class App:
         root.title("小说下载器 · Legado书源  →  TXT / EPUB")
         root.geometry("1040x720")
         root.minsize(900, 620)
+        theme.apply(root)      # Win11 Fluent 皮肤(v1.9.1):必须在建控件前套用
 
         self.q = queue.Queue()
         self.hits = []
@@ -216,14 +219,16 @@ class App:
             self.cmb_src.bind(_seq, self._src_trigger_press, add="+")
         self.cmb_src.bind("<Return>", lambda e: self._src_trigger_press(e))
         ttk.Button(top, text="打开目录", command=self._open_src_dir).pack(side="left")
-        self.btn_verify = ttk.Button(top, text="✔ 校验书源", command=self.start_verify)
+        self.btn_verify = ttk.Button(top, text="校验书源", command=self.start_verify,
+                                     style=theme.ST_ACCENT)
         self.btn_verify.pack(side="left")
         # 深度校验(活性 → 试搜 + 分类探测,deep.json 质量分级,v1.8.0)
-        self.btn_deep = ttk.Button(top, text="🔬 深度校验", command=self.start_deep_verify)
+        self.btn_deep = ttk.Button(top, text="深度校验", command=self.start_deep_verify,
+                                   style=theme.ST_ACCENT)
         self.btn_deep.pack(side="left", padx=(6, 0))
         ttk.Button(top, text="登录头", command=self.open_auth_manager,
                    width=7).pack(side="left", padx=(6, 0))
-        self.lbl_verify = ttk.Label(top, text="", foreground="#555")
+        self.lbl_verify = ttk.Label(top, text="", foreground=theme.TEXT2)
         self.lbl_verify.pack(side="left", padx=(6, 0))
 
         row2 = ttk.Frame(self.root)
@@ -241,7 +246,8 @@ class App:
                                        state="readonly",
                                        values=["自动", "书名", "作者", "分类"])
         self.cmb_domain.pack(side="left")
-        self.btn_search = ttk.Button(row2, text="🔍 搜索", command=self.start_search)
+        self.btn_search = ttk.Button(row2, text="🔍 搜索", command=self.start_search,
+                                     style=theme.ST_ACCENT)
         self.btn_search.pack(side="left")
         cb = ttk.Checkbutton(row2, text="模糊搜索", variable=self.var_fuzzy)
         cb.pack(side="left", padx=(8, 0))
@@ -251,7 +257,7 @@ class App:
                         variable=self.var_deep_only).pack(side="left", padx=(8, 0))
         self.btn_stop = ttk.Button(row2, text="停止", command=self.stop_all, state="disabled")
         self.btn_stop.pack(side="left", **pad)
-        self.lbl_progress = ttk.Label(row2, text="", foreground="#555")
+        self.lbl_progress = ttk.Label(row2, text="", foreground=theme.TEXT2)
         self.lbl_progress.pack(side="left", padx=10)
 
         # 结果表:普通 tree + 滚动条(tree 持鼠标捕获,橡皮筋选框为拖动时临时 Toplevel)
@@ -270,10 +276,10 @@ class App:
         self.tree.pack(side="left", fill="both", expand=True)
         vs.pack(side="right", fill="y")
         self.tree.bind("<<TreeviewSelect>>", lambda ev: self._sync_sel_label())  # 键盘增选时同步计数
-        self.tree.tag_configure("blocked", foreground="#b00020")   # 被封/失败的源标红
+        self.tree.tag_configure("blocked", foreground=theme.RED)   # 被封/失败的源标红
         # 同书分组底色:相邻组交替,一眼看出哪些行是同一本书
-        self.tree.tag_configure("grp1", background="#eef4fb")
-        self.tree.tag_configure("grp2", background="#ffffff")
+        self.tree.tag_configure("grp1", background=theme.ALT_ROW)
+        self.tree.tag_configure("grp2", background=theme.ROW_BG)
         # 移除 Treeview 类级绑定(其内置"单击替换选择/拖拽行选"会与自定义交互冲突),
         # 滚轮与方向键等必要行为由下方自行接管。
         try:
@@ -291,7 +297,7 @@ class App:
         self.root.bind("<Escape>", lambda e: self._ms_escape())
         self.idx2iid = {}                                          # hits 下标 -> 行 id
         self._rubber_top = None                                    # 橡皮筋半透明层(临时)
-        self.lbl_hits = ttk.Label(self.root, text="未搜索", foreground="#888")
+        self.lbl_hits = ttk.Label(self.root, text="未搜索", foreground=theme.TEXT3)
         self.lbl_hits.pack(anchor="w", padx=10)
 
         # 选择辅助(多选模式下全部可用;单选模式下 全选/反选 置灰)
@@ -304,18 +310,19 @@ class App:
         self.btn_sel_none = ttk.Button(selbar, text="清空选择", command=self.sel_none, width=9)
         self.btn_sel_none.pack(side="left")
         ttk.Button(selbar, text="清除缓存", command=self._cache_clear, width=9).pack(side="left", padx=4)
-        self.lbl_sel = ttk.Label(selbar, text="已选 0 本", foreground="#0066cc")
+        self.lbl_sel = ttk.Label(selbar, text="已选 0 本", foreground=theme.ACCENT)
         self.lbl_sel.pack(side="left", padx=12)
         self.lbl_sel_hint = ttk.Label(
             selbar,
             text="单击=单选 · Ctrl+单击=增减 · Shift+单击=连续选 · 按住拖动=框选(Shift=追加) · Esc 取消",
-            foreground="#888")
+            foreground=theme.TEXT3)
         self.lbl_sel_hint.pack(side="left")
 
         # 下载区
         dl = ttk.Frame(self.root)
         dl.pack(fill="x", padx=8, pady=4)
-        self.btn_dl = ttk.Button(dl, text="⬇ 下载选中", command=self.start_download)
+        self.btn_dl = ttk.Button(dl, text="⬇ 下载选中", command=self.start_download,
+                                 style=theme.ST_ACCENT)
         self.btn_dl.pack(side="left")
         ttk.Label(dl, text="保存到:").pack(side="left", padx=(16, 2))
         self.var_out = tk.StringVar(value=str(DEFAULT_OUT))
@@ -325,14 +332,15 @@ class App:
 
         self.pbar = ttk.Progressbar(self.root, mode="determinate")
         self.pbar.pack(fill="x", padx=8, pady=2)
-        self.lbl_dl = ttk.Label(self.root, text="", foreground="#444")
+        self.lbl_dl = ttk.Label(self.root, text="", foreground=theme.TEXT2)
         self.lbl_dl.pack(anchor="w", padx=10)
-        self.lbl_tick = ttk.Label(self.root, text="", foreground="#888")
+        self.lbl_tick = ttk.Label(self.root, text="", foreground=theme.TEXT3)
         self.lbl_tick.pack(anchor="w", padx=10)
 
         logf = ttk.LabelFrame(self.root, text="运行日志")
         logf.pack(fill="both", expand=False, padx=8, pady=(2, 6))
-        self.txt_log = tk.Text(logf, height=7, state="disabled", font=("Microsoft YaHei UI", 9))
+        self.txt_log = tk.Text(logf, height=6, state="disabled",
+                               font=theme.FONT_LOG, **theme.TEXT_FLAT)
         sb = ttk.Scrollbar(logf, command=self.txt_log.yview)
         self.txt_log.configure(yscrollcommand=sb.set)
         self.txt_log.pack(side="left", fill="both", expand=True)
@@ -376,26 +384,26 @@ class App:
             top.attributes("-topmost", True)
         except Exception:
             pass
-        wrap = tk.Frame(top, bd=1, relief="solid", bg="#f0f0f0")
+        wrap = tk.Frame(top, bd=1, relief="solid", bg=theme.BORDER)
         wrap.pack(fill="both", expand=True)
         frm = ttk.Frame(wrap, padding=6)
         frm.pack(fill="both", expand=True)
 
         n = len(self.checked_files)
         ttk.Label(frm, text="书源文件 · %d" % n,
-                  font=("Microsoft YaHei UI", 9, "bold")).pack(anchor="w", pady=(0, 3))
+                  font=theme.FONT_UI_BOLD).pack(anchor="w", pady=(0, 3))
 
         rows = ttk.Frame(frm)
         rows.pack(fill="both", expand=True)
         if not self.checked_files:
             ttk.Label(rows, text="(空 — 点下方「+ 新加入书源…」)",
-                      foreground="#888").pack(anchor="w", pady=4)
+                      foreground=theme.TEXT3).pack(anchor="w", pady=4)
         for fn in list(self.checked_files):
             row = ttk.Frame(rows)
             row.pack(fill="x", pady=1)
             missing = self._src_files_missing(fn)
             ttk.Label(row, text=("⚠ %s" % fn) if missing else fn,
-                      foreground="#b00020" if missing else "").pack(side="left")
+                      foreground=theme.RED if missing else "").pack(side="left")
             ttk.Button(row, text="✕", width=2,
                        command=lambda f=fn: self._remove_source_file(f)).pack(side="right")
 
@@ -755,7 +763,7 @@ class App:
                 srcs = [s for s in srcs if engine.deep_search_ok(s) is not False]
                 self.log("深度过滤:跳过 %d 个试搜未通过源" % len(skipped))
             elif not self.deep_table:
-                self.log("深度过滤已开启,但尚无深度校验记录(点「🔬 深度校验」生成),"
+                self.log("深度过滤已开启,但尚无深度校验记录(点「深度校验」生成),"
                          "本次未过滤。")
         fuzzy = self.var_fuzzy.get()
         domain = self.var_domain.get()
@@ -1048,7 +1056,7 @@ class App:
                    command=lambda: self._auth_kit.select_all()).pack(side="left")
         ttk.Button(top, text="清空", width=6,
                    command=lambda: self._auth_kit.clear_selection()).pack(side="left", padx=4)
-        lbl_cnt = ttk.Label(top, text="已选 0", foreground="#0066cc")
+        lbl_cnt = ttk.Label(top, text="已选 0", foreground=theme.ACCENT)
         lbl_cnt.pack(side="left")
 
         mid = ttk.Frame(win)
@@ -1065,7 +1073,7 @@ class App:
 
         det = ttk.LabelFrame(win, text="登录头(先选中源,再填/抓)")
         det.pack(fill="x", padx=8, pady=6)
-        lbl_cur = ttk.Label(det, foreground="#888")
+        lbl_cur = ttk.Label(det, foreground=theme.TEXT3)
         lbl_cur.config(text="未选中 · 在上方点选书源(支持 Ctrl/Shift/拖动框选多选)")
         lbl_cur.pack(anchor="w", padx=6, pady=(4, 0))
         row_ck = ttk.Frame(det)
@@ -1074,9 +1082,10 @@ class App:
         btn_fetch = ttk.Button(row_ck, text="浏览器登录抓取",
                                command=lambda: None, width=14)
         btn_fetch.pack(side="right")
-        lbl_stat = ttk.Label(det, text="", foreground="#888")
+        lbl_stat = ttk.Label(det, text="", foreground=theme.TEXT3)
         lbl_stat.pack(anchor="w", padx=6)
-        txt_ck = tk.Text(det, height=4, wrap="char")
+        txt_ck = tk.Text(det, height=4, wrap="char",
+                         font=theme.FONT_LOG, **theme.TEXT_FLAT)
         txt_ck.pack(fill="x", padx=6, pady=(0, 4))
         ttk.Label(det, text="自定义 header JSON(可空,如 {\"Referer\": \"https://xx.com/\"}):"
                   ).pack(anchor="w", padx=6)
@@ -1095,7 +1104,7 @@ class App:
         mgr = core_auth.AuthManager(self._auth, evq.put,
                                     APP_DIR / "auth_profile")
 
-        def _stat(msg, color="#888"):
+        def _stat(msg, color=theme.TEXT3):
             lbl_stat.config(text=msg, foreground=color)
 
         def poll_fetch():
@@ -1119,11 +1128,11 @@ class App:
                                     % (mgr.idx + 1, len(mgr.hosts),
                                        mgr.hosts[mgr.idx]))
                             _stat(base + (" ⚠ " + warn if warn else ""),
-                                  "#cc0000" if warn else "#888")
+                                  theme.RED if warn else theme.TEXT3)
                         else:
                             btn_fetch.config(text="我登录好了 → 抓取", state="normal")
                             if warn:
-                                _stat(warn + " 仍可尝试抓取,或换一个源。", "#cc0000")
+                                _stat(warn + " 仍可尝试抓取,或换一个源。", theme.RED)
                             else:
                                 _stat("浏览器已启动,请在浏览器里登录;完成后点本按钮抓取 Cookie。")
                     elif ek == "captured":
@@ -1136,23 +1145,23 @@ class App:
                             btn_fetch.config(text="浏览器登录抓取", state="normal")
                             _stat("已抓取 %d 条 Cookie 并填入 → 上方选中目标源(可多选)→ 点「保存到所选」" %
                                   len([p for p in ep.split("; ") if p]),
-                                  "#0066cc")
+                                  theme.ACCENT)
                         else:
                             btn_fetch.config(text="重试抓取", state="normal")
                             _stat("没抓到该站点的 Cookie —— 浏览器打开的可能不是目标站点"
                                   "(网址无效会落到 Edge 主页),或该站没种 Cookie。"
-                                  "可点「重试抓取」或手动粘贴。", "#cc0000")
+                                  "可点「重试抓取」或手动粘贴。", theme.RED)
                     elif ek == "error":
                         msg = ep
                         if "10061" in msg or "积极拒绝" in msg:
                             msg += " —— 抓取浏览器已关闭或未就绪;重新点「浏览器登录抓取」即可。"
                         if mgr.active:
-                            batch_finish("批量抓取中止: %s" % msg, "#cc0000")
+                            batch_finish("批量抓取中止: %s" % msg, theme.RED)
                         else:
                             mgr.close_browser()
                             sess["phase"] = "idle"
                             btn_fetch.config(text="浏览器登录抓取", state="normal")
-                            _stat(msg, "#cc0000")
+                            _stat(msg, theme.RED)
                     elif ek == "batch_opening":
                         btn_fetch.config(state="disabled")
                         _stat("批量 %d/%d: 正在打开 %s …(登录后点「抓取本站」)"
@@ -1242,7 +1251,7 @@ class App:
         # Phase2 并行登录扫(K 路标签池, 用户在页面里登录即零点击抓走),不再回串行。
         # 状态机与 CDP 编排在 core.auth_manager.AuthManager,这里只发令 + 渲染。
 
-        def batch_finish(msg, color="#0066cc"):
+        def batch_finish(msg, color=theme.ACCENT):
             mgr.finish()
             btn_fetch.config(text="浏览器登录抓取", state="normal")
             btn_skip.pack_forget()
@@ -1367,17 +1376,17 @@ class App:
                 hd = cfg.get("header")
                 var_hd.set(json.dumps(hd, ensure_ascii=False)
                            if isinstance(hd, dict) and hd else "")
-                lbl_cur.config(text="%s · %s" % (name, u), foreground="#222")
+                lbl_cur.config(text="%s · %s" % (name, u), foreground=theme.TEXT)
             elif sel:
                 cur_url[0] = ""
                 txt_ck.delete("1.0", "end")
                 var_hd.set("")
                 lbl_cur.config(text="已选 %d 个源(批量应用:填好后点「保存到所选」)"
-                               % len(sel), foreground="#0066cc")
+                               % len(sel), foreground=theme.ACCENT)
             else:
                 cur_url[0] = ""
                 lbl_cur.config(text="未选中 · 在上方点选书源(可批量)",
-                               foreground="#888")
+                               foreground=theme.TEXT3)
 
         def save_sel():
             sel = sorted(self._auth_kit.get())
@@ -1426,7 +1435,8 @@ class App:
         ttk.Button(btns, text="清空全部", command=clear_all).pack(side="left", padx=4)
         # 批量按钮行:自动为主(先排), 手动逐站为次;并行标签数两段并行共用
         btn_bauto = ttk.Button(btns, text="自动抓取",
-                               command=lambda: batch_start(True))
+                               command=lambda: batch_start(True),
+                               style=theme.ST_ACCENT)
         btn_bauto.pack(side="left", padx=(4, 0))
         btn_bstart = ttk.Button(btns, text="手动逐站",
                                 command=lambda: batch_start(False))
@@ -1482,7 +1492,7 @@ class App:
         except Exception:
             pass
         top.withdraw()                                  # 先隐藏,有面积再显示
-        c = tk.Canvas(top, highlightthickness=0, bg="#1e80ff", bd=0)
+        c = tk.Canvas(top, highlightthickness=0, bg=theme.RUBBER, bd=0)
         c.pack(fill="both", expand=True)
         # 松开/移动若落在遮罩上,同样走这里;坐标统一按"框左上角+局部偏移"换算
         c.bind("<ButtonRelease-1>", self._ms_release)
@@ -1877,7 +1887,7 @@ class App:
             now = time.time()
             self.verify_dones[fn] = {"origin": origin, "time": now}
             self._mem_save_core()
-            self.log("✔ 文件 %s 校验完成:有效 %d · 失效 %d · 耗时 %.0fs"
+            self.log("文件 %s 校验完成:有效 %d · 失效 %d · 耗时 %.0fs"
                      % (fn, n_ok, n_bad, elapsed))
         elif kind == "vdeep":
             fi, n_files, fn, phase, done, total = payload
@@ -1983,13 +1993,7 @@ class App:
 
 def main():
     root = tk.Tk()
-    try:
-        style = ttk.Style(root)
-        if "vista" in style.theme_names():
-            style.theme_use("vista")
-    except Exception:
-        pass
-    App(root)
+    App(root)                  # 主题在 App.__init__ 里 apply(clam 基座,v1.9.1)
     root.mainloop()
 
 

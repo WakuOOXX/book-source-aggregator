@@ -104,7 +104,7 @@ def report(ev, _state={"line": False}):
               end="", flush=True)
     elif kind == "vfile_done":
         fn, origin, ok, bad, elapsed = p
-        print("\r  ✔ %s:有效 %d · 失效 %d(耗时 %.0fs)" % (fn, ok, bad, elapsed))
+        print("\r  [OK] %s:有效 %d · 失效 %d(耗时 %.0fs)" % (fn, ok, bad, elapsed))
     elif kind == "vdeep":
         fi, n, fn, phase, done, total = p
         print("\r  [深度·%s] %d/%d   " % (phase, done, total), end="", flush=True)
@@ -128,7 +128,7 @@ def report(ev, _state={"line": False}):
         print("\r  正文 %d/%d 章 · %s   " % (done, total, msg), end="", flush=True)
     elif kind == "dlone":
         book, path, bi, n = p
-        print("\r  ✔ 《%s》 %d/%d 章 → %s" % (book["title"], book["ok"],
+        print("\r  [OK] 《%s》 %d/%d 章 → %s" % (book["title"], book["ok"],
                                               book["total"], path))
     elif kind == "dldone":
         mode, fmt, ok_list, fail_list = p
