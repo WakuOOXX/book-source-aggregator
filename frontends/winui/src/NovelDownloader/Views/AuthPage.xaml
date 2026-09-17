@@ -77,7 +77,9 @@
                         </ListView.ItemContainerStyle>
                         <ListView.ItemTemplate>
                             <DataTemplate x:DataType="viewmodels:AuthEntry">
-                                <Grid ColumnSpacing="8">
+                                <Grid ColumnSpacing="8"
+                                      AutomationProperties.Name="{Binding Name}"
+                                      AutomationProperties.HelpText="{Binding Url}">
                                     <Grid.ColumnDefinitions>
                                         <ColumnDefinition Width="16" />
                                         <ColumnDefinition Width="*" />

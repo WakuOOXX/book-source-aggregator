@@ -32,6 +32,12 @@ public partial class App : Application
     /// <summary>共享登录头页 VM (AuthPage 直接取用; 批量抓取进行中切页不中断)。</summary>
     public static AuthViewModel? AuthVM { get; private set; }
 
+    /// <summary>日志与设置页 VM (LogSettingsPage 直接取用)。</summary>
+    public static LogSettingsViewModel? LogSettingsVM { get; private set; }
+
+    /// <summary>本地设置存储 (主题 / 首启引导, %LOCALAPPDATA%\NovelDownloader\settings.json)。</summary>
+    public static Services.SettingsStore? Settings { get; private set; }
+
     /// <summary>主窗口 (文件选择器等需要窗口句柄的场景用)。</summary>
     public static Window? Window { get; private set; }
 
@@ -50,6 +56,9 @@ public partial class App : Application
     {
         var dispatcher = DispatcherQueue.GetForCurrentThread();
 
+        // 设置存储先建 (MainWindow 首启引导 / LogSettingsPage 主题初值都要读)。
+        Settings = new Services.SettingsStore();
+
         Backend = new BackendClient();
         Router = new EventRouter(Backend, dispatcher);
 
@@ -62,13 +71,35 @@ public partial class App : Application
         AuthVM = new AuthViewModel();
         Router.Attach(AuthVM);
 
+        // 设置页 VM 独立接线: hello 到达 → 关于区刷新后端版本 / JS 引擎状态。
+        LogSettingsVM = new LogSettingsViewModel(Settings);
+        Router.HelloReceived += OnHelloReceived;
+
         _window = new MainWindow();
         Window = _window;
         _window.Closed += OnWindowClosed;
         _window.Activate();
 
+        // 记忆主题即时生效 (设置页三选, 无需重启)。在 Activate 前设 RequestedTheme 同样有效。
+        ApplySavedTheme();
+
         // 启动后端并握手。fire-and-forget; 失败/异常都经 EventRouter 落到日志区。
         _ = StartBackendAsync();
+    }
+
+    private static void OnHelloReceived(Services.Backend.BackendHello hello)
+        => LogSettingsVM?.ApplyHello(hello);
+
+    /// <summary>把本地记忆的主题应用到窗口根 (ElementTheme.Default = 跟随系统)。</summary>
+    private static void ApplySavedTheme()
+    {
+        var mode = Settings?.Theme ?? Services.ThemeMode.System;
+        ApplyTheme(mode switch
+        {
+            Services.ThemeMode.Light => ElementTheme.Light,
+            Services.ThemeMode.Dark => ElementTheme.Dark,
+            _ => ElementTheme.Default,
+        });
     }
 
     private static async Task StartBackendAsync()

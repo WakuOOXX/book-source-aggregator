@@ -171,7 +171,10 @@
                 </ListView.ItemContainerStyle>
                 <ListView.ItemTemplate>
                     <DataTemplate x:DataType="models:HitItem">
-                        <Border BorderBrush="{ThemeResource BorderBrush}" BorderThickness="0,0,0,1">
+                        <Border BorderBrush="{ThemeResource BorderBrush}"
+                                BorderThickness="0,0,0,1"
+                                AutomationProperties.Name="{Binding Name}"
+                                AutomationProperties.HelpText="{Binding SubtitleLine}">
                             <Grid Padding="12,8" ColumnSpacing="8">
                                 <Grid.ColumnDefinitions>
                                     <ColumnDefinition Width="300" />

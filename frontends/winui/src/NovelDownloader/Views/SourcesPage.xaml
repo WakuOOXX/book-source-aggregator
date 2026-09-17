@@ -129,7 +129,9 @@
                             </ListView.ItemContainerStyle>
                             <ListView.ItemTemplate>
                                 <DataTemplate x:DataType="viewmodels:SourceFileItem">
-                                    <Grid Padding="8,6" ColumnSpacing="8">
+                                    <Grid Padding="8,6" ColumnSpacing="8"
+                                          AutomationProperties.Name="{Binding Name}"
+                                          AutomationProperties.HelpText="{Binding StatusText}">
                                         <Grid.ColumnDefinitions>
                                             <ColumnDefinition Width="*" />
                                             <ColumnDefinition Width="80" />

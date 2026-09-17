@@ -87,8 +87,56 @@
                 </muxc:NavigationViewItem>
             </muxc:NavigationView.FooterMenuItems>
 
-            <!-- 右侧内容 Frame: 页面切换 (默认 EntranceNavigationTransitionInfo) -->
-            <Frame x:Name="ContentFrame" />
+            <!-- 右侧内容区: Frame + 全局日志面板 -->
+            <Grid>
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="*" />
+                    <RowDefinition Height="Auto" />
+                </Grid.RowDefinitions>
+                <Frame x:Name="ContentFrame" Grid.Row="0" />
+                <muxc:Expander x:Name="LogExpander"
+                               Grid.Row="1"
+                               IsExpanded="True"
+                               HorizontalAlignment="Stretch"
+                               HorizontalContentAlignment="Stretch">
+                    <muxc:Expander.Header>
+                        <StackPanel Orientation="Horizontal" Spacing="8">
+                            <FontIcon Glyph="&#xE9D9;" FontSize="14" />
+                            <TextBlock Text="运行日志" VerticalAlignment="Center" />
+                        </StackPanel>
+                    </muxc:Expander.Header>
+                    <Border Background="{ThemeResource BackgroundDeepBrush}"
+                            BorderBrush="{ThemeResource BorderBrush}"
+                            BorderThickness="1"
+                            CornerRadius="4">
+                        <ListView x:Name="GlobalLogList"
+                                  Height="120"
+                                  Margin="0,4,0,4"
+                                  SelectionMode="None"
+                                  IsItemClickEnabled="False">
+                            <ListView.ItemContainerTransitions>
+                                <TransitionCollection />
+                            </ListView.ItemContainerTransitions>
+                            <ListView.ItemContainerStyle>
+                                <Style TargetType="ListViewItem" BasedOn="{StaticResource DefaultListViewItemStyle}">
+                                    <Setter Property="Padding" Value="12,3" />
+                                    <Setter Property="MinHeight" Value="0" />
+                                    <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+                                </Style>
+                            </ListView.ItemContainerStyle>
+                            <ListView.ItemTemplate>
+                                <DataTemplate>
+                                    <TextBlock Text="{Binding}"
+                                               FontFamily="{ThemeResource MonoFontFamily}"
+                                               FontSize="{ThemeResource FontSizeMono}"
+                                               TextWrapping="Wrap"
+                                               Foreground="{ThemeResource TextSecondaryBrush}" />
+                                </DataTemplate>
+                            </ListView.ItemTemplate>
+                        </ListView>
+                    </Border>
+                </muxc:Expander>
+            </Grid>
         </muxc:NavigationView>
     </Grid>
 </Window>
