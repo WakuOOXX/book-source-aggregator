@@ -224,6 +224,99 @@ public sealed class BackendClient : IAsyncDisposable, IDisposable
         => SendAsync(Json(new Dictionary<string, object?> { ["cmd"] = "config.get" }), ct);
 
     /// <summary>
+    /// verify: 校验书源文件。deep=false 常规 (HTTP 探测) / true 深度 (试搜+分类)。
+    /// files=null 校验清单内全部; 传文件名数组 (如 "xx.json") 只校验所选。
+    /// 进度经 vfile/vprog/vdeep/vfile_done/vdone 事件回流。
+    /// </summary>
+    public Task VerifyAsync(bool deep = false, IReadOnlyList<string>? files = null, CancellationToken ct = default)
+        => SendAsync(Json(new Dictionary<string, object?>
+        {
+            ["cmd"] = "verify",
+            ["deep"] = deep,
+            ["files"] = files,
+        }), ct);
+
+    /// <summary>sources.list: 书源文件清单 (ack 携带 files/checked/dir, 经 EventRouter 投递)。</summary>
+    public Task SourcesListAsync(CancellationToken ct = default)
+        => SendAsync(Json(new Dictionary<string, object?> { ["cmd"] = "sources.list" }), ct);
+
+    /// <summary>
+    /// sources.add: 添加书源文件 (后端负责复制进 shuyuan/ 并入清单)。
+    /// paths 可以是 shuyuan/ 下的裸文件名, 也可以是任意路径的 json 文件。
+    /// </summary>
+    public Task SourcesAddAsync(IReadOnlyList<string> paths, CancellationToken ct = default)
+        => SendAsync(Json(new Dictionary<string, object?>
+        {
+            ["cmd"] = "sources.add",
+            ["paths"] = paths,
+        }), ct);
+
+    /// <summary>sources.remove: 把文件移出校验/搜索清单 (仅清单, 磁盘文件保留)。</summary>
+    public Task SourcesRemoveAsync(string file, CancellationToken ct = default)
+        => SendAsync(Json(new Dictionary<string, object?>
+        {
+            ["cmd"] = "sources.remove",
+            ["file"] = file,
+        }), ct);
+
+    // ------------------------------------------------- auth 命令族 (M4) ----
+
+    /// <summary>
+    /// auth.list: 已配置登录头清单 (ack 携带 count/entries, 经 EventRouter → AuthViewModel)。
+    /// 注意: server 只回已配置源 (url + cookie/header), 不含书源名 —— 源列表名以 host 展示。
+    /// </summary>
+    public Task AuthListAsync(CancellationToken ct = default)
+        => SendAsync(Json(new Dictionary<string, object?> { ["cmd"] = "auth.list" }), ct);
+
+    /// <summary>
+    /// auth.save: 保存所选源的 Cookie 与自定义 header。
+    /// headerJson 传非空 JSON 字符串由后端 parse_header 解析; 空/null 表示不配 header。
+    /// cookie 与 header 皆空 = 移除所选源配置 (server.py 的 auth.save 语义)。
+    /// </summary>
+    public Task AuthSaveAsync(
+        IReadOnlyList<string> urls, string cookie = "", string? headerJson = null,
+        CancellationToken ct = default)
+        => SendAsync(Json(new Dictionary<string, object?>
+        {
+            ["cmd"] = "auth.save",
+            ["urls"] = urls,
+            ["cookie"] = cookie ?? "",
+            ["header"] = string.IsNullOrWhiteSpace(headerJson) ? null : headerJson,
+        }), ct);
+
+    /// <summary>auth.fetch 两段式第一步: 拉起浏览器打开 url 的登录页 (ack phase=launched)。</summary>
+    public Task AuthFetchStartAsync(string url, CancellationToken ct = default)
+        => SendAsync(Json(new Dictionary<string, object?>
+        {
+            ["cmd"] = "auth.fetch",
+            ["url"] = url,
+        }), ct);
+
+    /// <summary>auth.fetch 两段式第二步: 从已打开浏览器按 host 抓取 Cookie 并关浏览器 (ack phase=captured)。</summary>
+    public Task AuthFetchGrabAsync(string host, CancellationToken ct = default)
+        => SendAsync(Json(new Dictionary<string, object?>
+        {
+            ["cmd"] = "auth.fetch",
+            ["grab"] = true,
+            ["host"] = host,
+        }), ct);
+
+    /// <summary>
+    /// auth.remove: 移除所选源的登录头配置。
+    /// server.py 没有独立的 auth.remove 命令 —— 按 core.auth_manager.apply_to_urls 的
+    /// 「cookie/header 两项都空 = 移除所选源配置」语义, 以 auth.save 空载荷实现
+    /// (与 app.save_sel 的删除路径同口径)。
+    /// </summary>
+    public Task AuthRemoveAsync(IReadOnlyList<string> urls, CancellationToken ct = default)
+        => SendAsync(Json(new Dictionary<string, object?>
+        {
+            ["cmd"] = "auth.save",
+            ["urls"] = urls,
+            ["cookie"] = "",
+            ["header"] = null,
+        }), ct);
+
+    /// <summary>
     /// download: 下载选中书目。hits 为 HitItem 列表 (转为 DTO 传给后端)。
     /// mode = "单一" | "合并", fmt = "TXT" | "EPUB", outDir 为输出目录。
     /// </summary>

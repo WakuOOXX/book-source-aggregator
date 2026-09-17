@@ -4,40 +4,257 @@
     xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
     xmlns:muxc="using:Microsoft.UI.Xaml.Controls"
+    xmlns:viewmodels="using:NovelDownloader.ViewModels"
+    xmlns:converters="using:NovelDownloader.Converters"
     xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
     xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
     mc:Ignorable="d"
     Background="Transparent">
 
-    <StackPanel Margin="{ThemeResource PageMargin}" Spacing="16">
-        <TextBlock Text="书源管理"
-                   FontFamily="{ThemeResource DisplayFontFamily}"
-                   FontSize="{ThemeResource FontSizeTitleLarge}"
-                   FontWeight="SemiBold"
-                   Foreground="{ThemeResource TextPrimaryBrush}" />
+    <Page.Resources>
+        <converters:VerifyStateToBrushConverter x:Key="VerifyStateToBrushConverter" />
+    </Page.Resources>
 
-        <TextBlock Text="校验书源文件、查看有效/失效源、移出或添加书源。M0 为占位页, M3 实现。"
-                   TextWrapping="Wrap"
-                   Foreground="{ThemeResource TextSecondaryBrush}" />
+    <Grid>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+        </Grid.RowDefinitions>
 
-        <Border Background="{ThemeResource CardBrush}"
-                BorderBrush="{ThemeResource BorderBrush}"
-                BorderThickness="1"
-                CornerRadius="{ThemeResource CardCornerRadius}"
-                Padding="{ThemeResource CardPadding}">
-            <StackPanel Spacing="12">
-                <StackPanel Orientation="Horizontal" Spacing="12">
-                    <FontIcon Glyph="&#xE8F1;" FontSize="24" Foreground="{ThemeResource AccentBrush}" />
-                    <TextBlock Text="书源文件"
-                               VerticalAlignment="Center"
-                               FontWeight="SemiBold"
-                               Foreground="{ThemeResource TextPrimaryBrush}" />
-                </StackPanel>
-                <TextBlock Text="(占位) 文件卡片列表 / 校验进度环 / 有效 · 失效计数"
-                           Foreground="{ThemeResource TextTertiaryBrush}" />
-                <muxc:ProgressBar IsIndeterminate="False" Value="0" />
-                <Button Content="开始校验" IsEnabled="False" />
+        <!-- ==================== 顶栏: 标题 + 校验/深度校验按钮 ==================== -->
+        <Grid Grid.Row="0" Margin="{ThemeResource PageMargin}" ColumnSpacing="12">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="Auto" />
+                <ColumnDefinition Width="Auto" />
+            </Grid.ColumnDefinitions>
+
+            <StackPanel Grid.Column="0" Spacing="2" VerticalAlignment="Center">
+                <TextBlock Text="书源管理"
+                           FontFamily="{ThemeResource DisplayFontFamily}"
+                           FontSize="{ThemeResource FontSizeTitleLarge}"
+                           FontWeight="SemiBold"
+                           Foreground="{ThemeResource TextPrimaryBrush}" />
+                <TextBlock Text="校验书源文件、查看有效/失效源、移出或添加书源。校验进行中切换页面不中断。"
+                           TextWrapping="Wrap"
+                           Foreground="{ThemeResource TextSecondaryBrush}" />
             </StackPanel>
-        </Border>
-    </StackPanel>
+
+            <Button Grid.Column="1"
+                    x:Name="VerifyButton"
+                    Style="{StaticResource AccentButtonStyle}"
+                    Content="{Binding VerifyButtonText}"
+                    MinWidth="110"
+                    AutomationProperties.Name="校验书源"
+                    Click="VerifyButton_Click" />
+            <Button Grid.Column="2"
+                    x:Name="DeepVerifyButton"
+                    Content="{Binding DeepVerifyButtonText}"
+                    MinWidth="110"
+                    AutomationProperties.Name="深度校验"
+                    Click="DeepVerifyButton_Click" />
+        </Grid>
+
+        <!-- ==================== 内容区 (可滚动) ==================== -->
+        <ScrollViewer Grid.Row="1"
+                      Margin="{ThemeResource PageMargin}"
+                      VerticalScrollBarVisibility="Auto"
+                      HorizontalScrollBarVisibility="Disabled">
+            <StackPanel Spacing="16">
+
+                <!-- ============ 书源文件清单 ============ -->
+                <Border Background="{ThemeResource CardBrush}"
+                        BorderBrush="{ThemeResource BorderBrush}"
+                        BorderThickness="1"
+                        CornerRadius="{ThemeResource CardCornerRadius}"
+                        Padding="{ThemeResource CardPadding}">
+                    <StackPanel Spacing="12">
+                        <Grid>
+                            <StackPanel Orientation="Horizontal" Spacing="12" VerticalAlignment="Center">
+                                <FontIcon Glyph="&#xE8F1;" FontSize="24" Foreground="{ThemeResource AccentBrush}" />
+                                <TextBlock Text="{Binding FileCountText}"
+                                           VerticalAlignment="Center"
+                                           FontWeight="SemiBold"
+                                           Foreground="{ThemeResource TextPrimaryBrush}" />
+                            </StackPanel>
+                            <Button HorizontalAlignment="Right"
+                                    Content="+ 添加书源文件"
+                                    MinWidth="0"
+                                    AutomationProperties.Name="添加书源文件"
+                                    Click="AddSources_Click" />
+                        </Grid>
+
+                        <!-- 加载占位 (sources.list 未回) -->
+                        <TextBlock Text="正在加载书源清单…"
+                                   Foreground="{ThemeResource TextTertiaryBrush}"
+                                   Visibility="{Binding IsListLoaded, Converter={StaticResource BoolToVisibilityConverter}, ConverterParameter=invert}" />
+
+                        <!-- 表头行: 列宽与行模板逐列一致 -->
+                        <Grid Padding="8,2" ColumnSpacing="8" Visibility="{Binding IsListLoaded, Converter={StaticResource BoolToVisibilityConverter}}">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="80" />
+                                <ColumnDefinition Width="220" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Grid.Column="0" Text="文件名" FontWeight="SemiBold"
+                                       FontSize="{ThemeResource FontSizeCaption}"
+                                       Foreground="{ThemeResource TextSecondaryBrush}" />
+                            <TextBlock Grid.Column="1" Text="源数" FontWeight="SemiBold"
+                                       FontSize="{ThemeResource FontSizeCaption}"
+                                       Foreground="{ThemeResource TextSecondaryBrush}" />
+                            <TextBlock Grid.Column="2" Text="状态" FontWeight="SemiBold"
+                                       FontSize="{ThemeResource FontSizeCaption}"
+                                       Foreground="{ThemeResource TextSecondaryBrush}" />
+                            <TextBlock Grid.Column="3" Text="操作" FontWeight="SemiBold"
+                                       FontSize="{ThemeResource FontSizeCaption}"
+                                       Foreground="{ThemeResource TextSecondaryBrush}" />
+                        </Grid>
+
+                        <ListView x:Name="SourceFileList"
+                                  MaxHeight="320"
+                                  ItemsSource="{Binding SourceFiles}"
+                                  SelectionMode="None"
+                                  IsItemClickEnabled="False"
+                                  HorizontalContentAlignment="Stretch">
+                            <ListView.ItemContainerTransitions>
+                                <TransitionCollection />
+                            </ListView.ItemContainerTransitions>
+                            <ListView.ItemContainerStyle>
+                                <Style TargetType="ListViewItem" BasedOn="{StaticResource DefaultListViewItemStyle}">
+                                    <Setter Property="Padding" Value="0" />
+                                    <Setter Property="MinHeight" Value="0" />
+                                    <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+                                </Style>
+                            </ListView.ItemContainerStyle>
+                            <ListView.ItemTemplate>
+                                <DataTemplate x:DataType="viewmodels:SourceFileItem">
+                                    <Grid Padding="8,6" ColumnSpacing="8">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*" />
+                                            <ColumnDefinition Width="80" />
+                                            <ColumnDefinition Width="220" />
+                                            <ColumnDefinition Width="Auto" />
+                                        </Grid.ColumnDefinitions>
+                                        <StackPanel Grid.Column="0" Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
+                                            <Ellipse Width="10" Height="10" VerticalAlignment="Center"
+                                                     Fill="{Binding State, Converter={StaticResource VerifyStateToBrushConverter}}" />
+                                            <TextBlock Text="{Binding Name}"
+                                                       VerticalAlignment="Center"
+                                                       FontSize="{ThemeResource FontSizeBody}"
+                                                       Foreground="{ThemeResource TextPrimaryBrush}"
+                                                       TextTrimming="CharacterEllipsis" />
+                                        </StackPanel>
+                                        <TextBlock Grid.Column="1" Text="{Binding SourceCountText}"
+                                                   VerticalAlignment="Center"
+                                                   FontSize="{ThemeResource FontSizeBody}"
+                                                   Foreground="{ThemeResource TextSecondaryBrush}" />
+                                        <TextBlock Grid.Column="2" Text="{Binding StatusText}"
+                                                   VerticalAlignment="Center"
+                                                   FontSize="{ThemeResource FontSizeBody}"
+                                                   Foreground="{ThemeResource TextSecondaryBrush}"
+                                                   TextTrimming="CharacterEllipsis" />
+                                        <Button Grid.Column="3"
+                                                Content="移出清单"
+                                                MinWidth="0"
+                                                Padding="10,4"
+                                                AutomationProperties.Name="移出清单"
+                                                Click="RemoveFile_Click" />
+                                    </Grid>
+                                </DataTemplate>
+                            </ListView.ItemTemplate>
+                        </ListView>
+                    </StackPanel>
+                </Border>
+
+                <!-- ============ 校验区 ============ -->
+                <Border Background="{ThemeResource CardBrush}"
+                        BorderBrush="{ThemeResource BorderBrush}"
+                        BorderThickness="1"
+                        CornerRadius="{ThemeResource CardCornerRadius}"
+                        Padding="{ThemeResource CardPadding}">
+                    <StackPanel Spacing="12">
+                        <StackPanel Orientation="Horizontal" Spacing="12">
+                            <FontIcon Glyph="&#xE945;" FontSize="24" Foreground="{ThemeResource AccentBrush}" />
+                            <TextBlock Text="校验"
+                                       VerticalAlignment="Center"
+                                       FontWeight="SemiBold"
+                                       Foreground="{ThemeResource TextPrimaryBrush}" />
+                        </StackPanel>
+
+                        <ProgressBar x:Name="VerifyProgressBar"
+                                     Value="{Binding VerifyPercent}"
+                                     Maximum="100" />
+                        <TextBlock x:Name="VerifyStatusText"
+                                   Text="{Binding VerifyStatus}"
+                                   TextWrapping="Wrap"
+                                   Foreground="{ThemeResource TextPrimaryBrush}" />
+
+                        <!-- 逐文件进度 (校验中或已有结果时显示) -->
+                        <StackPanel Spacing="6"
+                                    Visibility="{Binding ShowVerifyingProgress, Converter={StaticResource BoolToVisibilityConverter}}">
+                            <TextBlock Text="逐文件进度"
+                                       FontWeight="SemiBold"
+                                       FontSize="{ThemeResource FontSizeCaption}"
+                                       Foreground="{ThemeResource TextSecondaryBrush}" />
+                            <ListView x:Name="VerifyFileListView"
+                                      MaxHeight="180"
+                                      ItemsSource="{Binding VerifyFiles}"
+                                      SelectionMode="None"
+                                      IsItemClickEnabled="False">
+                                <ListView.ItemContainerTransitions>
+                                    <TransitionCollection />
+                                </ListView.ItemContainerTransitions>
+                                <ListView.ItemContainerStyle>
+                                    <Style TargetType="ListViewItem" BasedOn="{StaticResource DefaultListViewItemStyle}">
+                                        <Setter Property="Padding" Value="0" />
+                                        <Setter Property="MinHeight" Value="0" />
+                                    </Style>
+                                </ListView.ItemContainerStyle>
+                                <ListView.ItemTemplate>
+                                    <DataTemplate x:DataType="viewmodels:VerifyFileItem">
+                                        <TextBlock Text="{Binding Line}"
+                                                   FontFamily="{ThemeResource MonoFontFamily}"
+                                                   FontSize="{ThemeResource FontSizeMono}"
+                                                   TextWrapping="Wrap"
+                                                   Foreground="{ThemeResource TextSecondaryBrush}" />
+                                    </DataTemplate>
+                                </ListView.ItemTemplate>
+                            </ListView>
+                        </StackPanel>
+
+                        <!-- 校验日志 (镜像到书源页) -->
+                        <muxc:Expander HorizontalAlignment="Stretch"
+                                       HorizontalContentAlignment="Stretch"
+                                       IsExpanded="True">
+                            <muxc:Expander.Header>
+                                <StackPanel Orientation="Horizontal" Spacing="8">
+                                    <FontIcon Glyph="&#xE9D9;" FontSize="14" />
+                                    <TextBlock Text="校验日志" VerticalAlignment="Center" />
+                                </StackPanel>
+                            </muxc:Expander.Header>
+                            <ListView x:Name="VerifyLogList"
+                                      Height="132"
+                                      Margin="0,4,0,0"
+                                      ItemsSource="{Binding LogBuffer}"
+                                      SelectionMode="None"
+                                      IsItemClickEnabled="False">
+                                <ListView.ItemContainerTransitions>
+                                    <TransitionCollection />
+                                </ListView.ItemContainerTransitions>
+                                <ListView.ItemTemplate>
+                                    <DataTemplate>
+                                        <TextBlock Text="{Binding}"
+                                                   FontFamily="{ThemeResource MonoFontFamily}"
+                                                   FontSize="{ThemeResource FontSizeMono}"
+                                                   TextWrapping="Wrap" />
+                                    </DataTemplate>
+                                </ListView.ItemTemplate>
+                            </ListView>
+                        </muxc:Expander>
+                    </StackPanel>
+                </Border>
+            </StackPanel>
+        </ScrollViewer>
+    </Grid>
 </Page>

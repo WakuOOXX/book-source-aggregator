@@ -3,8 +3,7 @@ setlocal
 REM NovelDownloader (WinUI 3) launcher. Auto-builds if exe missing.
 set "ROOT=%~dp0"
 set "PROJ=%ROOT%frontends\winui"
-set "EXE=%PROJ%src\NovelDownloaderind\Debug
-et8.0-windows10.0.19041.0\win-x64\NovelDownloader.exe"
+set "EXE=%PROJ%\src\NovelDownloader\bin\x64\Debug\net8.0-windows10.0.19041.0\win-x64\NovelDownloader.exe"
 
 if exist "%EXE%" goto launch
 

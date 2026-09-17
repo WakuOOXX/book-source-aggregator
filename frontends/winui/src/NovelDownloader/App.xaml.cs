@@ -26,6 +26,15 @@ public partial class App : Application
     /// <summary>共享搜索页 VM (MainPage 直接取用)。</summary>
     public static MainViewModel? MainVM { get; private set; }
 
+    /// <summary>共享书源页 VM (SourcesPage 直接取用; 校验进行中切页不中断)。</summary>
+    public static SourcesViewModel? SourcesVM { get; private set; }
+
+    /// <summary>共享登录头页 VM (AuthPage 直接取用; 批量抓取进行中切页不中断)。</summary>
+    public static AuthViewModel? AuthVM { get; private set; }
+
+    /// <summary>主窗口 (文件选择器等需要窗口句柄的场景用)。</summary>
+    public static Window? Window { get; private set; }
+
     /// <summary>后端进程客户端。</summary>
     public static BackendClient? Backend { get; private set; }
 
@@ -47,7 +56,14 @@ public partial class App : Application
         MainVM = new MainViewModel();
         Router.Attach(MainVM);
 
+        SourcesVM = new SourcesViewModel();
+        Router.Attach(SourcesVM);
+
+        AuthVM = new AuthViewModel();
+        Router.Attach(AuthVM);
+
         _window = new MainWindow();
+        Window = _window;
         _window.Closed += OnWindowClosed;
         _window.Activate();
 

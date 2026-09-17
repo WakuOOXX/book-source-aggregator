@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.Linq;
 using NovelDownloader.Models;
+using NovelDownloader.Services;
 using NovelDownloader.Services.Backend;
 
 namespace NovelDownloader.ViewModels;
@@ -78,7 +79,13 @@ public sealed class MainViewModel : ObservableObject
     public string SearchProgress
     {
         get => _searchProgress;
-        set => SetProperty(ref _searchProgress, value);
+        set
+        {
+            if (SetProperty(ref _searchProgress, value))
+            {
+                TraceLog.Write("sprog: " + value);
+            }
+        }
     }
 
     /// <summary>后端连接摘要 (hello)。</summary>
@@ -339,6 +346,7 @@ public sealed class MainViewModel : ObservableObject
     /// <summary>sres 结算: 退出搜索态, 落定计数。</summary>
     public void FinishSearch(SearchResultEvent sres)
     {
+        TraceLog.Write($"sres: ui={Hits.Count} engine={sres.HitCount} fuzzy={sres.Fuzzy}");
         EngineHitCount = sres.HitCount;
         HitCount = Hits.Count;
         IsSearching = false;
@@ -373,6 +381,37 @@ public sealed class MainViewModel : ObservableObject
     /// <summary>命中逐条上屏 (含同书相邻分组注记)。</summary>
     public void AddHit(HitItem item)
     {
+        AddHitCore(item);
+        HitCount = Hits.Count;
+        OnPropertyChanged(nameof(ShowEmptyHint));
+    }
+
+    /// <summary>
+    /// 批量命中上屏 (UiThrottle 排空路径): 分组注记逐条计算, 但
+    /// HitCount/占位只在整批后刷新一次 —— 数百条 hit 一个 UI 回合只触发
+    /// 一次计数通知与显隐重估, 配合关闭入场动画后 ListView 单回合一次布局。
+    /// </summary>
+    public void AddHitsRange(IReadOnlyList<HitItem> items)
+    {
+        if (items.Count == 0)
+        {
+            return;
+        }
+
+        TraceLog.Write($"AddHitsRange n={items.Count}");
+
+        foreach (var item in items)
+        {
+            AddHitCore(item);
+        }
+
+        HitCount = Hits.Count;
+        OnPropertyChanged(nameof(ShowEmptyHint));
+    }
+
+    /// <summary>分组注记 + Hits.Add (不触碰计数, 供单条/批量两条路径复用)。</summary>
+    private void AddHitCore(HitItem item)
+    {
         if (item.Name == _lastHitName && _groupIndex >= 0)
         {
             // 同一本书的下一个源: 属当前组, 非首项。
@@ -389,8 +428,6 @@ public sealed class MainViewModel : ObservableObject
         }
 
         Hits.Add(item);
-        HitCount = Hits.Count;
-        OnPropertyChanged(nameof(ShowEmptyHint));
     }
 
     /// <summary>追加一行日志 (超上限丢最旧)。</summary>
@@ -403,6 +440,33 @@ public sealed class MainViewModel : ObservableObject
 
         _log.Add(message);
         LogBuffer.Add(message);
+        TrimLogs();
+    }
+
+    /// <summary>批量日志 (UiThrottle 排空路径): 整批入队后一次性修剪到上限。</summary>
+    public void AppendLogsRange(IReadOnlyList<string?> messages)
+    {
+        var added = false;
+        foreach (var m in messages)
+        {
+            if (string.IsNullOrEmpty(m))
+            {
+                continue;
+            }
+
+            _log.Add(m);
+            LogBuffer.Add(m);
+            added = true;
+        }
+
+        if (added)
+        {
+            TrimLogs();
+        }
+    }
+
+    private void TrimLogs()
+    {
         while (_log.Count > LogCapacity)
         {
             _log.RemoveAt(0);

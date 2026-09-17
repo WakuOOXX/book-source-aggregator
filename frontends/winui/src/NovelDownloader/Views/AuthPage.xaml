@@ -3,39 +3,380 @@
     x:Class="NovelDownloader.Views.AuthPage"
     xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:muxc="using:Microsoft.UI.Xaml.Controls"
+    xmlns:viewmodels="using:NovelDownloader.ViewModels"
     xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
     xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
     mc:Ignorable="d"
     Background="Transparent">
 
-    <StackPanel Margin="{ThemeResource PageMargin}" Spacing="16">
-        <TextBlock Text="登录头管理"
-                   FontFamily="{ThemeResource DisplayFontFamily}"
-                   FontSize="{ThemeResource FontSizeTitleLarge}"
-                   FontWeight="SemiBold"
-                   Foreground="{ThemeResource TextPrimaryBrush}" />
+    <!-- 主从布局 (§6.4): 左 280px 源列表 / 右 详情编辑 + 批量抓取控制台 -->
+    <Grid Margin="{ThemeResource PageMargin}" ColumnSpacing="16">
+        <Grid.ColumnDefinitions>
+            <ColumnDefinition Width="280" />
+            <ColumnDefinition Width="*" />
+        </Grid.ColumnDefinitions>
 
-        <TextBlock Text="管理站点登录 Cookie, 支持单站抓取与批量抓取。M0 为占位页, M4 实现 (旧版最挤窗口的重设计)。"
-                   TextWrapping="Wrap"
-                   Foreground="{ThemeResource TextSecondaryBrush}" />
+        <!-- ==================== 左: 源列表 (master pane) ==================== -->
+        <Grid Grid.Column="0" RowSpacing="8">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="*" />
+                <RowDefinition Height="Auto" />
+            </Grid.RowDefinitions>
 
-        <Border Background="{ThemeResource CardBrush}"
-                BorderBrush="{ThemeResource BorderBrush}"
-                BorderThickness="1"
-                CornerRadius="{ThemeResource CardCornerRadius}"
-                Padding="{ThemeResource CardPadding}">
-            <StackPanel Spacing="12">
-                <StackPanel Orientation="Horizontal" Spacing="12">
-                    <FontIcon Glyph="&#xE72E;" FontSize="24" Foreground="{ThemeResource AccentBrush}" />
-                    <TextBlock Text="站点列表"
+            <StackPanel Grid.Row="0" Spacing="2">
+                <StackPanel Orientation="Horizontal" Spacing="12" VerticalAlignment="Center">
+                    <FontIcon Glyph="&#xE72E;" FontSize="20" Foreground="{ThemeResource AccentBrush}" />
+                    <TextBlock Text="{Binding SourceCountText}"
                                VerticalAlignment="Center"
                                FontWeight="SemiBold"
                                Foreground="{ThemeResource TextPrimaryBrush}" />
                 </StackPanel>
-                <TextBlock Text="(占位) 主从布局: 左站点列表 / 右 Cookie 详情 + 抓取控制台"
+                <TextBlock Text="● = 已配登录头 · ○ = 未配置"
+                           FontSize="{ThemeResource FontSizeCaption}"
                            Foreground="{ThemeResource TextTertiaryBrush}" />
-                <Button Content="抓取选中站点" IsEnabled="False" />
             </StackPanel>
-        </Border>
-    </StackPanel>
+
+            <TextBox Grid.Row="1"
+                     x:Name="FilterBox"
+                     PlaceholderText="过滤: 名称 / URL…"
+                     Text="{Binding FilterText, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                     AutomationProperties.Name="过滤登录头源" />
+
+            <Border Grid.Row="2"
+                    Background="{ThemeResource CardBrush}"
+                    BorderBrush="{ThemeResource BorderBrush}"
+                    BorderThickness="1"
+                    CornerRadius="{ThemeResource CardCornerRadius}">
+                <Grid>
+                    <!-- 加载占位 (auth.list 未回) -->
+                    <TextBlock Text="正在加载已配置源…"
+                               Margin="12"
+                               VerticalAlignment="Top"
+                               Foreground="{ThemeResource TextTertiaryBrush}"
+                               Visibility="{Binding ListLoaded, Converter={StaticResource BoolToVisibilityConverter}, ConverterParameter=invert}" />
+
+                    <ListView x:Name="AuthSourceList"
+                              ItemsSource="{Binding FilteredSources}"
+                              SelectionMode="Extended"
+                              SelectionChanged="AuthSourceList_SelectionChanged"
+                              IsItemClickEnabled="False"
+                              HorizontalContentAlignment="Stretch"
+                              Visibility="{Binding ListLoaded, Converter={StaticResource BoolToVisibilityConverter}}">
+                        <ListView.ItemContainerTransitions>
+                            <TransitionCollection />
+                        </ListView.ItemContainerTransitions>
+                        <ListView.ItemContainerStyle>
+                            <Style TargetType="ListViewItem" BasedOn="{StaticResource DefaultListViewItemStyle}">
+                                <Setter Property="Padding" Value="8,6" />
+                                <Setter Property="MinHeight" Value="0" />
+                                <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+                            </Style>
+                        </ListView.ItemContainerStyle>
+                        <ListView.ItemTemplate>
+                            <DataTemplate x:DataType="viewmodels:AuthEntry">
+                                <Grid ColumnSpacing="8">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="16" />
+                                        <ColumnDefinition Width="*" />
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock Grid.Column="0"
+                                               Text="●"
+                                               Foreground="{ThemeResource AccentBrush}"
+                                               FontWeight="Bold"
+                                               VerticalAlignment="Top"
+                                               Visibility="{Binding HasCookie, Converter={StaticResource BoolToVisibilityConverter}}" />
+                                    <TextBlock Grid.Column="0"
+                                               Text="○"
+                                               Foreground="{ThemeResource TextTertiaryBrush}"
+                                               FontWeight="Bold"
+                                               VerticalAlignment="Top"
+                                               Visibility="{Binding HasCookie, Converter={StaticResource BoolToVisibilityConverter}, ConverterParameter=invert}" />
+                                    <StackPanel Grid.Column="1" Spacing="1">
+                                        <TextBlock Text="{Binding Name}"
+                                                   FontSize="{ThemeResource FontSizeBody}"
+                                                   FontWeight="SemiBold"
+                                                   Foreground="{ThemeResource TextPrimaryBrush}"
+                                                   TextTrimming="CharacterEllipsis" />
+                                        <TextBlock Text="{Binding Url}"
+                                                   FontFamily="{ThemeResource MonoFontFamily}"
+                                                   FontSize="{ThemeResource FontSizeCaption}"
+                                                   Foreground="{ThemeResource TextTertiaryBrush}"
+                                                   TextTrimming="CharacterEllipsis" />
+                                    </StackPanel>
+                                </Grid>
+                            </DataTemplate>
+                        </ListView.ItemTemplate>
+                    </ListView>
+                </Grid>
+            </Border>
+
+            <Grid Grid.Row="3" ColumnSpacing="8">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="*" />
+                </Grid.ColumnDefinitions>
+                <Button Grid.Column="0"
+                        Content="全选"
+                        MinWidth="0"
+                        Padding="10,4"
+                        AutomationProperties.Name="全选"
+                        Click="SelectAll_Click" />
+                <Button Grid.Column="1"
+                        Content="清空"
+                        MinWidth="0"
+                        Padding="10,4"
+                        AutomationProperties.Name="清空选择"
+                        Click="ClearSelection_Click" />
+                <TextBlock Grid.Column="2"
+                           Text="{Binding SelectedCountText}"
+                           VerticalAlignment="Center"
+                           HorizontalAlignment="Right"
+                           Foreground="{ThemeResource AccentBrush}"
+                           FontWeight="SemiBold" />
+            </Grid>
+        </Grid>
+
+        <!-- ==================== 右: 详情编辑 + 批量控制台 ==================== -->
+        <Grid Grid.Column="1" RowSpacing="12">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="*" />
+            </Grid.RowDefinitions>
+
+            <!-- ============ 右上: 详情编辑 ============ -->
+            <Border Grid.Row="0"
+                    Background="{ThemeResource CardBrush}"
+                    BorderBrush="{ThemeResource BorderBrush}"
+                    BorderThickness="1"
+                    CornerRadius="{ThemeResource CardCornerRadius}"
+                    Padding="{ThemeResource CardPadding}">
+                <StackPanel Spacing="10">
+                    <TextBlock Text="{Binding DetailTitle}"
+                               Foreground="{ThemeResource TextSecondaryBrush}"
+                               TextWrapping="Wrap" />
+
+                    <TextBlock Text="Cookie (多行, 可粘贴整段) · 存留到站点会话"
+                               FontWeight="SemiBold"
+                               FontSize="{ThemeResource FontSizeCaption}"
+                               Foreground="{ThemeResource TextSecondaryBrush}" />
+                    <TextBox x:Name="CookieBox"
+                             Text="{Binding EditCookie, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                             Height="84"
+                             AcceptsReturn="True"
+                             TextWrapping="Wrap"
+                             FontFamily="{ThemeResource MonoFontFamily}"
+                             FontSize="{ThemeResource FontSizeMono}"
+                             PlaceholderText="BDUSS=…; …"
+                             AutomationProperties.Name="Cookie" />
+
+                    <TextBlock Text="{}自定义 Header JSON (可空, 如 {&quot;Referer&quot;: &quot;https://xx.com/&quot;})"
+                               FontWeight="SemiBold"
+                               FontSize="{ThemeResource FontSizeCaption}"
+                               Foreground="{ThemeResource TextSecondaryBrush}" />
+                    <TextBox x:Name="HeaderBox"
+                             Text="{Binding EditHeaderJson, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                             Height="56"
+                             AcceptsReturn="True"
+                             TextWrapping="NoWrap"
+                             FontFamily="{ThemeResource MonoFontFamily}"
+                             FontSize="{ThemeResource FontSizeMono}"
+                             PlaceholderText="{}e.g. {&quot;Referer&quot;: &quot;https://…&quot;}"
+                             AutomationProperties.Name="自定义Header" />
+
+                    <TextBlock Text="{Binding FetchStatus}"
+                               Foreground="{ThemeResource TextTertiaryBrush}"
+                               TextWrapping="Wrap" />
+
+                    <Grid ColumnSpacing="8">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="*" />
+                        </Grid.ColumnDefinitions>
+                        <Button Grid.Column="0"
+                                Style="{StaticResource AccentButtonStyle}"
+                                Content="保存到所选"
+                                MinWidth="100"
+                                IsEnabled="{Binding CanSave}"
+                                AutomationProperties.Name="保存到所选"
+                                Click="SaveButton_Click" />
+                        <Button Grid.Column="1"
+                                Content="{Binding FetchButtonText}"
+                                MinWidth="130"
+                                IsEnabled="{Binding CanFetch}"
+                                AutomationProperties.Name="浏览器登录抓取"
+                                Click="FetchButton_Click" />
+                        <Button Grid.Column="2"
+                                Content="删除所选"
+                                MinWidth="90"
+                                IsEnabled="{Binding CanSave}"
+                                AutomationProperties.Name="删除所选"
+                                Click="DeleteButton_Click" />
+                    </Grid>
+                </StackPanel>
+            </Border>
+
+            <!-- ============ 右下: 批量抓取控制台 ============ -->
+            <Border Grid.Row="1"
+                    Background="{ThemeResource CardBrush}"
+                    BorderBrush="{ThemeResource BorderBrush}"
+                    BorderThickness="1"
+                    CornerRadius="{ThemeResource CardCornerRadius}"
+                    Padding="{ThemeResource CardPadding}">
+                <StackPanel Spacing="10">
+                    <StackPanel Orientation="Horizontal" Spacing="12" VerticalAlignment="Center">
+                        <FontIcon Glyph="&#xE945;" FontSize="20" Foreground="{ThemeResource AccentBrush}" />
+                        <TextBlock Text="批量抓取"
+                                   VerticalAlignment="Center"
+                                   FontWeight="SemiBold"
+                                   Foreground="{ThemeResource TextPrimaryBrush}" />
+                        <Border Background="{ThemeResource CardSoftBrush}"
+                                CornerRadius="10"
+                                Padding="10,2"
+                                VerticalAlignment="Center">
+                            <TextBlock Text="{Binding BatchStageText}"
+                                       FontSize="{ThemeResource FontSizeCaption}"
+                                       Foreground="{ThemeResource AccentTextBrush}" />
+                        </Border>
+                    </StackPanel>
+
+                    <Grid ColumnSpacing="8">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="*" />
+                        </Grid.ColumnDefinitions>
+                        <Button Grid.Column="0"
+                                Style="{StaticResource AccentButtonStyle}"
+                                Content="▶ 自动抓取"
+                                MinWidth="100"
+                                AutomationProperties.Name="自动抓取"
+                                Click="AutoGrab_Click" />
+                        <Button Grid.Column="1"
+                                Content="手动逐站"
+                                MinWidth="100"
+                                AutomationProperties.Name="手动逐站"
+                                Click="ManualGrab_Click" />
+                        <CheckBox Grid.Column="2"
+                                  Content="跳过已配站"
+                                  MinWidth="0"
+                                  VerticalAlignment="Center"
+                                  IsChecked="{Binding SkipConfigured, Mode=TwoWay}"
+                                  AutomationProperties.Name="跳过已配站" />
+                        <TextBlock Grid.Column="3"
+                                   Text="{Binding FilteredCountText}"
+                                   HorizontalAlignment="Right"
+                                   VerticalAlignment="Center"
+                                   FontSize="{ThemeResource FontSizeCaption}"
+                                   Foreground="{ThemeResource TextTertiaryBrush}" />
+                    </Grid>
+
+                    <Grid ColumnSpacing="12">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <Slider Grid.Column="0"
+                                Minimum="2"
+                                Maximum="20"
+                                StepFrequency="1"
+                                SnapsTo="StepValues"
+                                VerticalAlignment="Center"
+                                Value="{Binding ParaTabs, Mode=TwoWay}"
+                                AutomationProperties.Name="并行标签数" />
+                        <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="6" VerticalAlignment="Center">
+                            <TextBlock Text="并行标签"
+                                       Foreground="{ThemeResource TextSecondaryBrush}" />
+                            <Border Background="{ThemeResource CardSoftBrush}"
+                                    CornerRadius="10"
+                                    MinWidth="28"
+                                    Padding="8,2">
+                                <TextBlock Text="{Binding ParaTabsText}"
+                                           HorizontalAlignment="Center"
+                                           Foreground="{ThemeResource AccentTextBrush}"
+                                           FontWeight="SemiBold" />
+                            </Border>
+                        </StackPanel>
+                    </Grid>
+
+                    <ProgressBar Value="{Binding BatchPercent}" Maximum="100" />
+
+                    <TextBlock Text="{Binding BatchProgress}"
+                               Foreground="{ThemeResource TextPrimaryBrush}"
+                               TextWrapping="Wrap" />
+
+                    <!-- 运行态控制 (暂停/抓取本站/跳过/结束) -->
+                    <Grid ColumnSpacing="8"
+                          Visibility="{Binding IsBatchRunning, Converter={StaticResource BoolToVisibilityConverter}}">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <Button Grid.Column="0"
+                                Content="{Binding PauseButtonText}"
+                                MinWidth="80"
+                                AutomationProperties.Name="暂停继续"
+                                Click="PauseButton_Click" />
+                        <Button Grid.Column="1"
+                                Content="抓取本站"
+                                MinWidth="80"
+                                IsEnabled="{Binding CanGrabCurrent}"
+                                AutomationProperties.Name="抓取本站"
+                                Click="GrabCurrent_Click" />
+                        <Button Grid.Column="2"
+                                Content="跳过该站"
+                                MinWidth="80"
+                                IsEnabled="{Binding CanSkipSite}"
+                                AutomationProperties.Name="跳过该站"
+                                Click="SkipSite_Click" />
+                        <Button Grid.Column="3"
+                                Content="结束批量"
+                                MinWidth="80"
+                                AutomationProperties.Name="结束批量"
+                                Click="StopBatch_Click" />
+                    </Grid>
+                </StackPanel>
+            </Border>
+
+            <!-- ============ 日志 ============ -->
+            <muxc:Expander Grid.Row="2"
+                           HorizontalAlignment="Stretch"
+                           HorizontalContentAlignment="Stretch"
+                           IsExpanded="True">
+                <muxc:Expander.Header>
+                    <StackPanel Orientation="Horizontal" Spacing="8">
+                        <FontIcon Glyph="&#xE9D9;" FontSize="14" />
+                        <TextBlock Text="登录头日志" VerticalAlignment="Center" />
+                    </StackPanel>
+                </muxc:Expander.Header>
+                <ListView x:Name="AuthLogList"
+                          Height="120"
+                          Margin="0,4,0,0"
+                          ItemsSource="{Binding LogBuffer}"
+                          SelectionMode="None"
+                          IsItemClickEnabled="False">
+                    <ListView.ItemContainerTransitions>
+                        <TransitionCollection />
+                    </ListView.ItemContainerTransitions>
+                    <ListView.ItemTemplate>
+                        <DataTemplate>
+                            <TextBlock Text="{Binding}"
+                                       FontFamily="{ThemeResource MonoFontFamily}"
+                                       FontSize="{ThemeResource FontSizeMono}"
+                                       TextWrapping="Wrap" />
+                        </DataTemplate>
+                    </ListView.ItemTemplate>
+                </ListView>
+            </muxc:Expander>
+        </Grid>
+    </Grid>
 </Page>

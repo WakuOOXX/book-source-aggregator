@@ -186,21 +186,91 @@ public sealed class BackendEnvelope
     [JsonPropertyName("running")] public string? Running { get; init; }
 
     // hello 专属字段 (其余消息缺省, 无害)。
+    // files/checked 用 JsonElement 承载: hello 时是数字 (文件数/清单数),
+    // sources.list ack 时是数组 (SourceFileDto 行 / 清单文件名)。用数值访问器
+    // (FilesCount / CheckedCount) 只取数字形态, 数组形态留给 ParseSourcesListAck。
     [JsonPropertyName("version")] public string? Version { get; init; }
     [JsonPropertyName("js")] public bool Js { get; init; }
     [JsonPropertyName("sources")] public int Sources { get; init; }
-    [JsonPropertyName("files")] public int Files { get; init; }
-    [JsonPropertyName("checked")] public int Checked { get; init; }
+    [JsonPropertyName("files")] public JsonElement Files { get; init; }
+    [JsonPropertyName("checked")] public JsonElement Checked { get; init; }
     [JsonPropertyName("auth")] public int Auth { get; init; }
     [JsonPropertyName("source_dir")] public string? SourceDir { get; init; }
+
+    // auth 命令族 ack 专属字段 (auth.list / auth.save / auth.fetch; 其余消息缺省, 无害)。
+    [JsonPropertyName("count")] public int Count { get; init; }
+    [JsonPropertyName("entries")] public JsonElement Entries { get; init; }
+    [JsonPropertyName("phase")] public string? Phase { get; init; }
+    [JsonPropertyName("url")] public string? Url { get; init; }
+    [JsonPropertyName("host")] public string? Host { get; init; }
+    [JsonPropertyName("grab_host")] public string? GrabHost { get; init; }
+    [JsonPropertyName("cookie")] public string? Cookie { get; init; }
+
+    /// <summary>hello 的文件数 (files 为数字形态时; 数组形态回 0)。</summary>
+    public int FilesCount => Files.ValueKind == JsonValueKind.Number ? Files.GetInt32() : 0;
+
+    /// <summary>hello 的清单数 (checked 为数字形态时; 数组形态回 0)。</summary>
+    public int CheckedCount => Checked.ValueKind == JsonValueKind.Number ? Checked.GetInt32() : 0;
 
     /// <summary>其余字段 (后续命令的 ack 数据等) 原样保留。</summary>
     [JsonExtensionData] public Dictionary<string, JsonElement>? Extra { get; init; }
 
     /// <summary>hello → 强类型 BackendHello。</summary>
     public BackendHello ToHello() => new(
-        Version ?? "", Js, Sources, Files, Checked, Auth, SourceDir ?? "");
+        Version ?? "", Js, Sources, FilesCount, CheckedCount, Auth, SourceDir ?? "");
 }
+
+// ---------------------------------- sources.list ack 数据 ----------------------------------
+
+/// <summary>
+/// sources.list ack 的 files 单项 (server._cmd_sources_list)。
+/// checked = 该文件是否在校验/搜索清单内; exists = 磁盘上是否仍存在。
+/// </summary>
+public sealed record SourceFileDto(
+    [property: JsonPropertyName("name")] string Name,
+    [property: JsonPropertyName("checked")] bool Checked,
+    [property: JsonPropertyName("exists")] bool Exists);
+
+/// <summary>sources.list 命令的完整应答 (files + 生效清单 + 书源目录)。</summary>
+public sealed class SourcesListResult
+{
+    public IReadOnlyList<SourceFileDto> Files { get; init; } = Array.Empty<SourceFileDto>();
+    public IReadOnlyList<string> Checked { get; init; } = Array.Empty<string>();
+    public string Dir { get; init; } = "";
+}
+
+// ---------------------------------- auth 命令族 ack 数据 ----------------------------------
+
+/// <summary>
+/// auth.list 的 entries 单项 (server._cmd_auth_list)。
+/// header 为原始 dict (JSON 对象); cookie 为字符串 (空串 = 该源仅配了 header)。
+/// </summary>
+public sealed record AuthEntryDto(
+    [property: JsonPropertyName("url")] string Url,
+    [property: JsonPropertyName("cookie")] string Cookie,
+    [property: JsonPropertyName("header")] JsonElement Header)
+{
+    /// <summary>header dict → 可编辑的 JSON 文本 (空对象回空串)。</summary>
+    public string HeaderJson
+        => Header.ValueKind == JsonValueKind.Object && Header.EnumerateObject().Any()
+            ? Header.ToString()
+            : "";
+}
+
+/// <summary>auth.list 命令的完整应答 (已配置源条目)。</summary>
+public sealed class AuthListResult
+{
+    public int Count { get; init; }
+    public IReadOnlyList<AuthEntryDto> Entries { get; init; } = Array.Empty<AuthEntryDto>();
+}
+
+/// <summary>
+/// auth.fetch 两段式 ack (server._run_auth_launch / _run_auth_grab):
+///   phase=launched  → 浏览器已打开 url, 抓取主机为 grab_host;
+///   phase=captured  → 已按 host 抓回 cookie (空串 = 没抓到)。
+/// </summary>
+public sealed record AuthFetchAckInfo(
+    string Phase, string Url, string Host, string GrabHost, string Cookie);
 
 /// <summary>
 /// JSONL 行 → 强类型 BackendEvent 的解析器。
@@ -301,6 +371,142 @@ public static class BackendEventParser
         "dlerr" => new DownloadErrorEvent(p.GetString() ?? ""),
         _ => throw new NotSupportedException($"未知事件 kind: {kind}"),
     };
+
+    // -------- ack 数据读取 (sources.list) --------
+
+    /// <summary>
+    /// sources.list 的 ack 信封 → SourcesListResult。数据字段在 ack 顶层
+    /// (files / checked / dir), 反序列化后落在 <see cref="BackendEnvelope.Extra"/> 里,
+    /// 这里取出并强类型化。非该 ack 或形状不符返回 null (不抛)。
+    /// </summary>
+    public static SourcesListResult? ParseSourcesListAck(BackendEnvelope env)
+    {
+        if (env.Type != "ack" || env.Cmd != "sources.list")
+        {
+            return null;
+        }
+
+        try
+        {
+            var files = new List<SourceFileDto>();
+            if (env.Files.ValueKind == JsonValueKind.Array)
+            {
+                foreach (var row in env.Files.EnumerateArray())
+                {
+                    files.Add(new SourceFileDto(
+                        RowString(row, "name"),
+                        RowBool(row, "checked"),
+                        RowBool(row, "exists")));
+                }
+            }
+
+            var checkedList = new List<string>();
+            if (env.Checked.ValueKind == JsonValueKind.Array)
+            {
+                foreach (var s in env.Checked.EnumerateArray())
+                {
+                    if (s.ValueKind == JsonValueKind.String)
+                    {
+                        checkedList.Add(s.GetString() ?? "");
+                    }
+                }
+            }
+
+            var dir = "";
+            if (env.Extra is not null
+                && env.Extra.TryGetValue("dir", out var dEl)
+                && dEl.ValueKind == JsonValueKind.String)
+            {
+                dir = dEl.GetString() ?? "";
+            }
+
+            return new SourcesListResult { Files = files, Checked = checkedList, Dir = dir };
+        }
+        catch (Exception)
+        {
+            // ack 形状意外 (理论不该发生): 视为无数据, 前端保持旧列表。
+            return null;
+        }
+    }
+
+    private static string RowString(JsonElement obj, string prop)
+        => obj.ValueKind == JsonValueKind.Object
+           && obj.TryGetProperty(prop, out var v)
+           && v.ValueKind == JsonValueKind.String
+            ? (v.GetString() ?? "")
+            : "";
+
+    private static bool RowBool(JsonElement obj, string prop)
+        => obj.ValueKind == JsonValueKind.Object
+           && obj.TryGetProperty(prop, out var v)
+           && v.ValueKind == JsonValueKind.True;
+
+    // -------- ack 数据读取 (auth) --------
+
+    /// <summary>
+    /// auth.list 的 ack 信封 → AuthListResult。数据字段在 ack 顶层
+    /// (count / entries), 反序列化后落在 <see cref="BackendEnvelope"/> 对应属性上。
+    /// 非该 ack 或形状不符返回 null (不抛)。
+    /// </summary>
+    public static AuthListResult? ParseAuthListAck(BackendEnvelope env)
+    {
+        if (env.Type != "ack" || env.Cmd != "auth.list")
+        {
+            return null;
+        }
+
+        try
+        {
+            var entries = new List<AuthEntryDto>();
+            if (env.Entries.ValueKind == JsonValueKind.Array)
+            {
+                foreach (var row in env.Entries.EnumerateArray())
+                {
+                    if (row.ValueKind != JsonValueKind.Object)
+                    {
+                        continue;
+                    }
+
+                    entries.Add(new AuthEntryDto(
+                        RowString(row, "url"),
+                        RowString(row, "cookie"),
+                        RowElement(row, "header")));
+                }
+            }
+
+            return new AuthListResult { Count = env.Count, Entries = entries };
+        }
+        catch (Exception)
+        {
+            // ack 形状意外 (理论不该发生): 视为无数据, 前端保持旧列表。
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// auth.fetch 的 ack 信封 → AuthFetchAckInfo (phase/url/host/grab_host/cookie)。
+    /// 非该 ack 或 phase 缺失返回 null (不抛)。
+    /// </summary>
+    public static AuthFetchAckInfo? ParseAuthFetchAck(BackendEnvelope env)
+    {
+        if (env.Type != "ack" || env.Cmd != "auth.fetch" || string.IsNullOrEmpty(env.Phase))
+        {
+            return null;
+        }
+
+        return new AuthFetchAckInfo(
+            env.Phase!,
+            env.Url ?? "",
+            env.Host ?? "",
+            env.GrabHost ?? "",
+            env.Cookie ?? "");
+    }
+
+    private static JsonElement RowElement(JsonElement obj, string prop)
+        => obj.ValueKind == JsonValueKind.Object
+           && obj.TryGetProperty(prop, out var v)
+            ? v
+            : default;
 
     // -------- 数组元素读取助手 (payload 是元组 → JSON 数组) --------
 

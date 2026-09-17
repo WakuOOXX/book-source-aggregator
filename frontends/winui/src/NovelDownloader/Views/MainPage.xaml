@@ -147,7 +147,11 @@
                 </Grid>
             </Border>
 
-            <!-- 行区: ListView + ItemTemplate 定宽 Grid (列宽与表头逐列一致) -->
+            <!-- 行区: ListView + ItemTemplate 定宽 Grid (列宽与表头逐列一致)。
+                 ItemContainerTransitions 置空: 默认模板含 AddDeleteThemeTransition,
+                 命中洪流时每条 Add 都开一个入场动画 → UI 线程被动画合成占满。
+                 虚拟化仍由默认 ItemsPanel (VirtualizingStackPanel) 负责, ItemTemplate
+                 为 Border>Grid 不破坏回收。 -->
             <ListView Grid.Row="1" x:Name="ResultsView"
                       Margin="0"
                       SelectionMode="Extended"
@@ -155,6 +159,9 @@
                       ScrollViewer.HorizontalScrollBarVisibility="Disabled"
                       ItemsSource="{Binding Hits}"
                       SelectionChanged="ResultsView_SelectionChanged">
+                <ListView.ItemContainerTransitions>
+                    <TransitionCollection />
+                </ListView.ItemContainerTransitions>
                 <ListView.ItemContainerStyle>
                     <Style TargetType="ListViewItem" BasedOn="{StaticResource DefaultListViewItemStyle}">
                         <Setter Property="Padding" Value="0" />
@@ -225,6 +232,9 @@
                       ItemsSource="{Binding LogBuffer}"
                       SelectionMode="None"
                       IsItemClickEnabled="False">
+                <ListView.ItemContainerTransitions>
+                    <TransitionCollection />
+                </ListView.ItemContainerTransitions>
                 <ListView.ItemTemplate>
                     <DataTemplate>
                         <TextBlock Text="{Binding}"

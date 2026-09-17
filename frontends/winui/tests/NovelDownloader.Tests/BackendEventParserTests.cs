@@ -122,6 +122,32 @@ public class BackendEventParserTests
     }
 
     [Fact]
+    public void ParseSourcesListAck_ReadsFilesCheckedDirFromArrayShape()
+    {
+        // sources.list ack 的 files/checked 是数组 (hello 的 files/checked 才是数字)。
+        // 信封共用同名字段, 必须两种形态都能反序列化 (回归: 曾因 int 绑定数组而崩)。
+        const string line = """
+        {"type":"ack","cmd":"sources.list","files":[{"name":"a.json","checked":true,"exists":true},{"name":"b.json","checked":false,"exists":false}],"checked":["a.json"],"dir":"E:\\book\\bookdl\\shuyuan"}
+        """;
+
+        var env = BackendEventParser.ParseEnvelope(line, out var error);
+
+        Assert.Null(error);
+        Assert.NotNull(env);
+        var result = BackendEventParser.ParseSourcesListAck(env!);
+
+        Assert.NotNull(result);
+        Assert.Equal(2, result!.Files.Count);
+        Assert.Equal("a.json", result.Files[0].Name);
+        Assert.True(result.Files[0].Checked);
+        Assert.True(result.Files[0].Exists);
+        Assert.False(result.Files[1].Exists);
+        Assert.Single(result.Checked);
+        Assert.Equal("a.json", result.Checked[0]);
+        Assert.Equal("E:\\book\\bookdl\\shuyuan", result.Dir);
+    }
+
+    [Fact]
     public void ParseLine_BrokenJson_ReportsErrorWithoutThrowing()
     {
         const string line = """{"type":"event","kind":"log",""";
