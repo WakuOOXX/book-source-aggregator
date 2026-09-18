@@ -90,22 +90,10 @@ dotnet test  frontends/winui/NovelDownloader.sln -c Debug
 
 **杀软报毒？** PyInstaller 单文件 exe 偶发误报，换个目录装或加白名单，实在介意就源码跑。
 
-## 想改代码
-
-前端 spawn `server.py` 走 JSONL 协议（stdin 喂命令，stdout 吐事件流），业务在 `core/`（搜索/校验/下载/登录头/清理）和 `legado/`（规则引擎）。规则 DSL 兼容矩阵、全命令表、事件契约都在[技术文档](docs/技术文档.md)里。测试：`dotnet test frontends/winui/NovelDownloader.sln`（144 条，覆盖事件解析和各页状态机）。
-
-打安装包（要 .NET 8 SDK、Python 3.12 的 venv、Inno Setup 6）：
-
-```bash
-py -3.12 -m venv .build-venv
-.build-venv\Scripts\pip install requests curl_cffi websocket-client beautifulsoup4 mini-racer pyinstaller
-build-installer.bat        # 产物: dist\BookSourceAggregator-Setup-<版本>.exe
-```
-
 ## 免责声明
 
 本项目只用于学习和研究网络请求与规则解析技术。随包附的书源清单来自公开网络共享，不保证能用，作者不对任何源的内容负责。请尊重版权：仅供个人试读，下载内容请于 24 小时内删除，长期阅读请去起点、晋江等官方平台支持正版。
 
 ## 许可
 
-[Apache License 2.0](LICENSE)。二改闭源商用可以，但请保留版权声明并注明你改过的文件，别用我的名义宣传。
+[Apache License 2.0](LICENSE)。
