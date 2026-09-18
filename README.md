@@ -37,7 +37,7 @@ Windows 桌面应用 · WinUI 3 界面 + Python 后端 · 自研 Legado 规则�
 
 选书与下载：
 
-- 勾选选书，全选 / 反选 / 一键清空；重开程序自动恢复上次选中。
+- 点选 / Ctrl 加选 / Shift 连选 / 空白处拖动框选；另有全选 / 反选 / 一键清空；重开程序自动恢复上次选中。
 - 两种模式：**万里挑一**（选中的书依次换源试下，第一本成功即停）/ **全部下载**（每本各存一个文件）。
 - 导出格式 **自动**（优先 EPUB，书源不支持自动降级 TXT）/ EPUB / TXT。
 - 正文逐章抓取，目录分页拼接；重名书自动加书源后缀防覆盖；「下载」页统一管理已下载的书。
@@ -77,7 +77,7 @@ dotnet test  frontends/winui/NovelDownloader.sln -c Debug
 
 ## 📖 使用指南
 
-界面导航收在右上角菜单里：搜索 / 书源 / 下载 / 登录头 / 日志与设置；头像下拉有「下载」快捷入口。
+点标题栏左上角 ☰，从左侧滑出毛玻璃导航面板：搜索 / 书源 / 下载 / 登录头 / 日志与设置；再点面板顶部的 ☰ 收起。
 
 ### 搜索（搜索页）
 
@@ -131,8 +131,8 @@ dotnet test  frontends/winui/NovelDownloader.sln -c Debug
 ## 🧩 二次开发
 
 - 架构：WinUI 3 前端 spawn `server.py`（JSONL 协议，stdin 命令 / stdout 事件流），业务逻辑在 `core/`（搜索/校验/下载/登录头/清理）与 `legado/`（规则引擎），细节见[技术文档](docs/技术文档.md)。
-- 规则 DSL 兼容矩阵、JSONL 全命令表、事件契约（15 种 kind）都在技术文档；事件契约由 `tests/test_event_contract.py` + C# 侧用例双向把守。
-- 测试：`python -m pytest tests -q`、`dotnet test frontends/winui/NovelDownloader.sln`。
+- 规则 DSL 兼容矩阵、JSONL 全命令表、事件契约（15 种 kind）都在技术文档；事件契约由 C# 侧用例双向把守。
+- 测试：`dotnet test frontends/winui/NovelDownloader.sln`。
 
 打安装包（需 .NET 8 SDK、Python 3.12 venv、Inno Setup 6）：
 
