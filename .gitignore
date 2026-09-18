@@ -25,6 +25,11 @@ desktop.ini
 .DS_Store
 .venv/
 venv/
+.build-venv/
+# 安装包构建: backend.spec 要入库 (*.spec 全局忽略的例外), staging/out 是产物。
+!installer/*.spec
+installer/staging/
+installer/out/
 *.db
 *.sqlite3
 test_outputs/
