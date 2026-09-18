@@ -20,11 +20,11 @@ AppPublisherURL=https://github.com/WakuOOXX/book-source-aggregator
 DefaultDirName={autopf}\{#InstallDirName}
 DefaultGroupName={#AppName}
 DisableProgramGroupPage=yes
-; 允许安装时自选目录 (需求: 下载→解压→安装→选目录)。
+; 允许安装时自选目录 (下载 Setup.exe → 双击 → 选目录)。
 DisableDirPage=no
 UninstallDisplayIcon={app}\{#AppName}.exe
 OutputDir=out
-OutputBaseFilename={#AppName}-Setup-{#AppVersion}
+OutputBaseFilename=BookSourceAggregator-Setup-{#AppVersion}
 Compression=lzma2/max
 SolidCompression=yes
 ArchitecturesAllowed=x64compatible

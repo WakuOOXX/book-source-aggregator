@@ -80,5 +80,5 @@ mkdir dist 2>nul
 copy /y "installer\out\*-%VERSION%.exe" dist\ >nul
 
 echo.
-echo ✔ 完成: dist\ 下的 书源聚合下载器-Setup-%VERSION%.exe
-echo   分发时连同 zip 外壳上传 (下载 → 解压 → 运行 Setup → 选目录安装)。
+echo ✔ 完成: dist\ 下的 BookSourceAggregator-Setup-%VERSION%.exe
+echo   直接上传 GitHub Release (资产名限 ASCII, 与产物同名)。
