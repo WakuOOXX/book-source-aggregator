@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>小说下载器 — 读 Legado 书源,搜索并导出 TXT / EPUB3</title>
+<title>书源聚合下载器 — 读 Legado 书源,搜索、校验、批量下载</title>
 <meta name="description" content="开源 Windows 桌面工具,用 Legado 格式书源搜索并下载小说。并发搜全部书源、失效的自动跳过、可按文件校验,导出 TXT 或 EPUB3。不内置书源。">
 <style>
   :root{
@@ -178,7 +178,7 @@
       <span class="brand-mark">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20V4H6.5A2.5 2.5 0 0 0 4 6.5v13z"/><path d="M20 17H6.5a2.5 2.5 0 0 0 0 5H20v-5z"/></svg>
       </span>
-      小说下载器
+      书源聚合下载器
     </a>
     <div class="nav-links">
       <a href="#features">特性</a>
@@ -187,11 +187,11 @@
       <a href="#faq">常见问题</a>
     </div>
     <div class="nav-cta">
-      <a class="gh-pill" href="https://github.com/WakuOOXX/novel-downloader" target="_blank" rel="noopener">
+      <a class="gh-pill" href="https://github.com/WakuOOXX/book-source-aggregator" target="_blank" rel="noopener">
         <svg width="15" height="15" viewBox="0 0 16 16" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8z"/></svg>
         <span>GitHub</span>
       </a>
-      <a class="btn btn-p" style="padding:8px 16px" href="https://github.com/WakuOOXX/novel-downloader/releases/latest">下载</a>
+      <a class="btn btn-p" style="padding:8px 16px" href="https://github.com/WakuOOXX/book-source-aggregator/releases/latest">下载</a>
     </div>
   </div>
 </nav>
@@ -199,23 +199,23 @@
 <header class="hero" id="top">
   <div class="hero-bg"></div>
   <div class="wrap">
-    <span class="eyebrow"><span class="dot-pulse"></span>v1.9.0 已发布 · core / UI 双层架构 · Windows 免安装 · 发布包不含书源</span>
+    <span class="eyebrow"><span class="dot-pulse"></span>v1.31 已发布 · WinUI 3 界面 + Python 后端 · 安装包自带运行环境与开箱书源</span>
     <h1>读 Legado 书源<br><span class="g">搜索、校验、批量下载</span></h1>
     <p class="sub">导入一份书源 JSON,输入书名。程序并发把全部书源跑一遍,返回的结果边搜边进表格;直搜没结果就自动换关键词变体重试。选中要的书下载,导出 TXT 或 EPUB3。</p>
     <div class="hero-cta">
-      <a class="btn btn-p" href="https://github.com/WakuOOXX/novel-downloader/releases/latest">
+      <a class="btn btn-p" href="https://github.com/WakuOOXX/book-source-aggregator/releases/latest">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
         下载 Windows 版
       </a>
-      <a class="btn btn-g" href="https://github.com/WakuOOXX/novel-downloader" target="_blank" rel="noopener">查看源代码</a>
+      <a class="btn btn-g" href="https://github.com/WakuOOXX/book-source-aggregator" target="_blank" rel="noopener">查看源代码</a>
     </div>
-    <p class="ver">zip 约 20 MB,解压即用 · Windows 10 / 11</p>
+    <p class="ver">安装包约 74 MB,下载 → 解压 → 安装(可选目录) · Windows 11 x64</p>
 
     <div class="shot" id="app">
       <div class="win">
         <div class="win-bar">
           <span class="wdot"></span>
-          <span style="font-size:12.5px;color:#5a626e;font-weight:600">小说下载器</span>
+          <span style="font-size:12.5px;color:#5a626e;font-weight:600">书源聚合下载器</span>
           <span class="wurl">输入书名,一键导出 TXT / EPUB3</span>
           <span class="wchip" style="margin-left:auto">书源:全部</span>
           <span class="wbtns"><span>─</span><span>▢</span><span class="wclose">✕</span></span>
@@ -231,23 +231,23 @@
           </div>
           <div class="w-result">已返回 <b>12</b> 条 · 用时 2.4s · 命中即上屏,不等候选源全部跑完</div>
           <table class="w">
-            <tr><th>书名</th><th>作者</th><th>最新章节</th><th>书源</th></tr>
+            <tr><th>书名</th><th>作者</th><th>分类</th><th>最新章节</th><th>书源</th></tr>
             <tr class="hl">
               <td><span class="tname"><span class="cover" style="background:linear-gradient(150deg,#6366f1,#22d3ee)"></span>示例书名</span></td>
-              <td>作者甲</td><td>2487 章<span class="tag tag-end" style="margin-left:8px">完结</span></td>
+              <td>作者甲</td><td>玄幻</td><td>2487 章<span class="tag tag-end" style="margin-left:8px">完结</span></td>
               <td><span class="tag tag-src">书源甲</span></td>
             </tr>
             <tr>
               <td><span class="tname"><span class="cover" style="background:linear-gradient(150deg,#f472b6,#fb923c)"></span>示例书名 · 番外</span></td>
-              <td>作者乙</td><td>连载中</td><td><span class="tag tag-src">书源甲</span></td>
+              <td>作者乙</td><td>玄幻</td><td>连载中</td><td><span class="tag tag-src">书源甲</span></td>
             </tr>
             <tr>
               <td><span class="tname"><span class="cover" style="background:linear-gradient(150deg,#34d399,#0ea5e9)"></span>同名前缀的另一本</span></td>
-              <td>作者丙</td><td>连载中</td><td><span class="tag tag-src">书源乙</span></td>
+              <td>作者丙</td><td>都市</td><td>连载中</td><td><span class="tag tag-src">书源乙</span></td>
             </tr>
             <tr>
               <td><span class="tname"><span class="cover" style="background:linear-gradient(150deg,#a78bfa,#f43f5e)"></span>同一位作者的别本</span></td>
-              <td>作者甲</td><td>连载中</td><td><span class="tag tag-src">书源乙</span></td>
+              <td>作者甲</td><td>玄幻</td><td>连载中</td><td><span class="tag tag-src">书源乙</span></td>
             </tr>
           </table>
           <div class="w-foot"><span>⬇ 正在导出</span><span class="bar"><i></i></span><span>示例书名.epub</span></div>
@@ -274,7 +274,7 @@
       <div class="f">
         <span class="f-ic"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="8" height="8" rx="1.5"/><rect x="13" y="13" width="8" height="8" rx="1.5"/><path d="M13 7h3M7 13v3"/></svg></span>
         <div><h3>core / UI 双层架构</h3>
-        <p>搜索、校验、下载的业务编排全部收进 <code style="background:#eef0f7;border:1px solid #e2e5f0;border-radius:4px;padding:1px 5px;font-size:12.5px">core\</code> 包 8 个模块,零 tkinter 依赖:界面与逻辑之间用统一事件契约通信,纯函数可单测、可复用,112 条单元测试全绿。</p></div>
+        <p>搜索、校验、下载的业务编排全部收进 <code style="background:#eef0f7;border:1px solid #e2e5f0;border-radius:4px;padding:1px 5px;font-size:12.5px">core\</code> 包 8 个模块,零界面依赖:WinUI 3 前端经 JSONL 协议与 <code>server.py</code> 后端通信,15 种事件契约双向把守,Python 144 条 + C# 143 条单元测试全绿。</p></div>
       </div>
       <div class="f">
         <span class="f-ic"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg></span>
@@ -329,20 +329,20 @@
   <div class="wrap">
     <div class="sec-head">
       <h2>首次使用三步</h2>
-      <p>不用装 Python。解压、导入书源、搜索下载。</p>
+      <p>不用装 Python。下载、解压、安装,装完就能搜。</p>
     </div>
     <div class="steps">
       <div class="step">
         <h3>下载解压</h3>
-        <p>把 zip 解压到任意目录,双击 <code>小说下载器.exe</code>。首次打开是没有书源的,点顶部「打开目录」会创建并打开 <code>shuyuan\</code> 文件夹。</p>
+        <p>到 Releases 下载 <code>书源聚合下载器-1.31.zip</code>,解压后运行 <code>书源聚合下载器-Setup-1.31.exe</code>,安装时可自选目录。</p>
       </div>
       <div class="step">
-        <h3>导入书源</h3>
-        <p>把 Legado 书源 JSON 放进 <code>shuyuan\</code>,再点「书源文件 → + 新加入书源…」加入清单(支持多选,不在该目录的文件会自动复制进去)。<code>*.good.json</code> / <code>*.error.json</code> 是校验产物,不会被当成书源。</p>
+        <h3>开箱即用</h3>
+        <p>首次启动自动播种一份内置书源清单(也可在「书源」页导入自己的 Legado 书源 JSON,支持多选、自动复制进数据目录并合并去重)。<code>*.good.json</code> / <code>*.error.json</code> 是校验产物,不会被当成书源。</p>
       </div>
       <div class="step">
         <h3>搜索下载</h3>
-        <p>输入书名搜索,双击结果下载。点「校验书源」可以先筛出活源,之后搜索更快;缓存占地方了点「清除缓存」清掉即可。</p>
+        <p>输入书名搜索,勾选要的书点「下载选中」。到「书源」页先校验一轮活源,之后搜索更快;下载完在「下载」页统一管理。设置页可改数据存储目录、清缓存或清数据。</p>
       </div>
     </div>
   </div>
@@ -369,11 +369,11 @@
       </details>
       <details>
         <summary>书源会更新吗?要不要重装程序?</summary>
-        <p>不用。书源就是你放进 <code>shuyuan\</code> 的那些 JSON 文件,拿到新版覆盖同名文件即可,exe 不用动。</p>
+        <p>不用。书源就是数据目录(<code>%LOCALAPPDATA%\BookSourceAggregator\shuyuan\</code>,设置页可改)里的那些 JSON 文件,拿到新版在「书源」页重新导入即可,程序本体不用动。</p>
       </details>
       <details>
-        <summary>为什么不内置书源?</summary>
-        <p>一是合规:书源来自社区共享,内容不可控,内置了有法律风险。二是实用:书源站换得快,不内置的话拿到新文件覆盖进去就行,不用重下整个程序。</p>
+        <summary>安装包里的书源是哪来的?</summary>
+        <p>一份社区公开共享的合集(约 3400 源),首次启动播种到数据目录,随时可替换或删掉(「清除数据」会连登录头一起清空并恢复这份出厂清单)。它只是起点:这类源死亡率高,建议尽快用「校验书源 / 深度校验」筛出活源,或导入自己维护的更新版本。</p>
       </details>
       <details>
         <summary>这是爬虫吗?有没有风险?</summary>
@@ -386,21 +386,21 @@
 <section>
   <div class="wrap">
     <div class="cta-card">
-      <h2>不装 Python,解压就能跑</h2>
-      <p>Windows 10 / 11 免安装。发布包不含书源,自备一份导入即可开始搜索。</p>
+      <h2>不装 Python,装完就能用</h2>
+      <p>Windows 11 安装包,自带全部运行环境与一份开箱书源。</p>
       <div class="hero-cta" style="margin-top:0">
-        <a class="btn btn-w" href="https://github.com/WakuOOXX/novel-downloader/releases/latest">下载 Windows 版(zip)</a>
-        <a class="btn btn-o" href="https://github.com/WakuOOXX/novel-downloader" target="_blank" rel="noopener">GitHub 仓库</a>
+        <a class="btn btn-w" href="https://github.com/WakuOOXX/book-source-aggregator/releases/latest">下载 Windows 版(安装包)</a>
+        <a class="btn btn-o" href="https://github.com/WakuOOXX/book-source-aggregator" target="_blank" rel="noopener">GitHub 仓库</a>
       </div>
     </div>
-    <div class="warn"><b>免责声明</b>　本项目用于学习与研究网络请求与规则解析技术。发布包不含书源,书源由用户自行准备并导入,不保证可用性,也不对其内容负责。请尊重版权:仅供个人试读,下载内容请于 24 小时内删除;长期阅读请支持起点、晋江等正版平台。</div>
+    <div class="warn"><b>免责声明</b>　本项目用于学习与研究网络请求与规则解析技术。安装包附带的书源清单来自公开网络共享,不保证可用性,也不对其内容负责;请尊重版权:仅供个人试读,下载内容请于 24 小时内删除;长期阅读请支持起点、晋江等正版平台。</div>
   </div>
 </section>
 
 <footer>
   <div class="wrap foot">
-    <span>小说下载器 · MIT License © 2026 WakuOOXX</span>
-    <span><a href="https://github.com/WakuOOXX/novel-downloader" target="_blank" rel="noopener">GitHub</a> · <a href="https://github.com/WakuOOXX/novel-downloader/releases" target="_blank" rel="noopener">Releases</a> · <a href="https://github.com/WakuOOXX/novel-downloader/blob/main/docs/技术文档.md" target="_blank" rel="noopener">技术文档</a></span>
+    <span>书源聚合下载器 · MIT License © 2026 WakuOOXX</span>
+    <span><a href="https://github.com/WakuOOXX/book-source-aggregator" target="_blank" rel="noopener">GitHub</a> · <a href="https://github.com/WakuOOXX/book-source-aggregator/releases" target="_blank" rel="noopener">Releases</a> · <a href="https://github.com/WakuOOXX/book-source-aggregator/blob/main/docs/技术文档.md" target="_blank" rel="noopener">技术文档</a></span>
   </div>
 </footer>
 

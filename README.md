@@ -1,16 +1,16 @@
 <div align="center">
 
-# 📚 小说下载器
+# 📚 书源聚合下载器
 
-Windows 桌面应用 · Python + tkinter · 自研 Legado 规则引擎
+Windows 桌面应用 · WinUI 3 界面 + Python 后端 · 自研 Legado 规则引擎
 
-[![release](https://img.shields.io/github/v/release/WakuOOXX/novel-downloader)](https://github.com/WakuOOXX/novel-downloader/releases/latest)
+[![release](https://img.shields.io/github/v/release/WakuOOXX/book-source-aggregator)](https://github.com/WakuOOXX/book-source-aggregator/releases/latest)
 [![license](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![python](https://img.shields.io/badge/python-3.14%2B-blue)](#)
-[![platform](https://img.shields.io/badge/platform-Windows-lightgrey)](#)
+[![python](https://img.shields.io/badge/python-3.12%2B-blue)](#)
+[![platform](https://img.shields.io/badge/platform-Windows%2011-lightgrey)](#)
 
-[🌐 项目官网](https://WakuOOXX.github.io/novel-downloader/) ·
-[⬇️ 下载 Windows 版](https://github.com/WakuOOXX/novel-downloader/releases/latest) ·
+[🌐 项目官网](https://WakuOOXX.github.io/book-source-aggregator/) ·
+[⬇️ 下载 Windows 版](https://github.com/WakuOOXX/book-source-aggregator/releases/latest) ·
 [📖 技术文档](docs/技术文档.md)
 
 </div>
@@ -20,7 +20,6 @@ Windows 桌面应用 · Python + tkinter · 自研 Legado 规则引擎
 ## 目录
 
 - [功能特性](#-功能特性)
-- [界面预览](#-界面预览)
 - [快速开始](#-快速开始)
 - [使用指南](#-使用指南)
 - [配置与数据文件](#-配置与数据文件)
@@ -30,161 +29,122 @@ Windows 桌面应用 · Python + tkinter · 自研 Legado 规则引擎
 
 ## ✨ 功能特性
 
-搜索阶段：
+搜索：
 
-- 一次搜索并发，结果边搜边上屏，不用等全部跑完。
-- 直搜无果时自动生成关键词变体重试，只打这一轮还活着的源，结果按相关度排序。
-- 含 JS 的书源已解锁（内置 V8 引擎执行 Legado 的 `java.*` 脚本；未装 mini-racer 时自动回退为跳过），登录态书源自动跳过，不会报错中断。
+- 一次并发扫全部有效书源，结果边搜边上屏，不用等跑完。
+- 直搜无果自动生成关键词变体重试；「只看相关」过滤掉无视搜索词返回热门书充数的小站。
+- 含 JS 的书源已解锁（内置 V8 引擎执行 Legado 的 `java.*` 脚本），登录态书源自动跳过不中断。
 
-选书阶段（和资源管理器同一套操作习惯）：
+选书与下载：
 
-- 单击选一本，Ctrl 加减单个，Shift 连续选。
-- 按住左键拖出蓝框，框内的行全部选中；Shift/Ctrl 加拖动则追加进已选。
-- Esc 取消框选，双击直接下载这本书。
-- 重开程序后自动恢复上次的选中状态，失效条目自动跳过。
+- 勾选选书，全选 / 反选 / 一键清空；重开程序自动恢复上次选中。
+- 两种模式：**万里挑一**（选中的书依次换源试下，第一本成功即停）/ **全部下载**（每本各存一个文件）。
+- 导出格式 **自动**（优先 EPUB，书源不支持自动降级 TXT）/ EPUB / TXT。
+- 正文逐章抓取，目录分页拼接；重名书自动加书源后缀防覆盖；「下载」页统一管理已下载的书。
 
-下载阶段：
+书源管理：
 
-- 「下载单一」按顺序探测候选源，单源 15 秒封顶，被封的自动标红跳过，只留下能下全的那本。
-- 「合并下载」把选中的每本都下下来，各自独立成文件。
-- 导出格式 EPUB / TXT 二选一，不重复占空间。
-- 正文逐章抓取，支持目录分页拼接；重名书自动加书源后缀防覆盖。
-
-> 实现细节（并发与超时策略、规则语法兼容矩阵、EPUB 内部结构）见[技术文档](docs/技术文档.md)。
-
-## 🖼️ 界面预览
-
-<!-- 截图就位后取消下面的注释。建议三张：搜索结果页、拖框多选、下载方式弹窗。
-     存放到 docs/assets/ 下，文件名对应改好即可。
-
-![搜索结果页](docs/assets/screenshot-search.png)
-![拖框多选](docs/assets/screenshot-rubber-select.png)
-![下载方式弹窗](docs/assets/screenshot-download-dialog.png)
-
--->
+- 多书源文件合并去重；384 并发连通性体检生成有效表；深度校验（真实试搜 + 分类探测）给每个源定质量等级。
+- 登录头抓取：CDP 驱动 Chrome 逐站登录，Cookie / 请求头自动注入对应书源。
 
 ## 🚀 快速开始
 
-### 方式一：免安装版（推荐）
+### 安装使用（推荐）
 
-1. 下载 [最新版 release](https://github.com/WakuOOXX/novel-downloader/releases/latest) 里的 `novel-downloader-vX.Y.Z-windows-x64.zip`，解压到任意目录；
-2. 双击 `小说下载器.exe`（免 Python 环境）；
-3. 首次使用：点顶部「打开目录」→ 程序会自动创建并打开 `shuyuan\` 文件夹，把 Legado 书源 JSON 放进去 → 回到程序用「+ 新加入书源…」加入清单。
+1. 到 [Releases](https://github.com/WakuOOXX/book-source-aggregator/releases/latest) 下载 `书源聚合下载器-1.31.zip`；
+2. 解压后运行里面的 `书源聚合下载器-Setup-1.31.exe`，安装时可自选目录；
+3. 首次启动自动播种一份内置书源清单，直接搜书即可。
 
-exe 免 Python 环境，已在 Windows 11 实测。**发布包不含书源**（版权原因），需自备；书源可随时替换，不用重下程序。首次启动需解压，慢一两秒属正常。
+安装包自带全部运行环境（WinUI 前端 + 冻结的 Python 后端），目标机器不需要装 Python。
 
-### 方式二：源码运行
+### 源码运行
 
 ```bash
-git clone https://github.com/WakuOOXX/novel-downloader.git
-cd novel-downloader
+git clone https://github.com/WakuOOXX/book-source-aggregator.git
+cd book-source-aggregator
 pip install requests beautifulsoup4 lxml websocket-client curl_cffi
-pip install mini-racer    # 可选:JS 引擎,解锁含 JS 的书源(1484 个)
-python app.py        # 用 pythonw app.py 启动可免控制台窗口
+pip install mini-racer        # 可选: JS 引擎, 解锁含 JS 的书源
+python server.py              # JSONL 后端 (供 WinUI 前端拉起)
+python cli.py                 # 或直接用命令行版
 ```
 
-注意：解释器必须带 tkinter，python.org 官方安装包默认包含；部分精简版 Python 没有，启动会报 `ModuleNotFoundError`。排查细节见[技术文档 §2](docs/技术文档.md)。
+WinUI 3 前端在 `frontends/winui/`，需要 .NET 8 SDK + Windows 11：
+
+```bash
+dotnet build frontends/winui/NovelDownloader.sln -c Debug -p:Platform=x64
+dotnet test  frontends/winui/NovelDownloader.sln -c Debug
+```
 
 ## 📖 使用指南
 
-### 搜索
+界面导航收在右上角菜单里：搜索 / 书源 / 下载 / 登录头 / 日志与设置；头像下拉有「下载」快捷入口。
 
-顶部选书源分组（想省事就选带「校验可用」字样的分组），输入关键词回车。搜索框旁有域下拉（自动/书名/作者/分类），默认「自动」：书名/作者/分类/简介任一处命中关键词即保留；选「作者」或「分类」则只保留该域命中的结果（网络仍按书名发起，该域为本地过滤）。结果边搜边上屏，随时可以点「停止」。
+### 搜索（搜索页）
 
-「只看相关结果」默认开启：很多小站无视搜索词返回热门书充数，开启后只有书名/作者/分类/简介里含关键词的结果才会显示；想看全量就把它去掉。
+输入书名或作者回车。书源分组下拉可限定搜索范围（先用书源页校验出的「可用」分组）；域下拉默认「自动」，书名/作者/分类/简介任一命中即保留。结果表五列：书名 / 作者 / 分类 / 最新章节 / 书源。
 
-### 书源校验
+### 书源（书源页）
 
-顶部「书源文件(N)」下拉可管理多个书源 JSON 文件：点开后是**已加入清单**面板，每行文件右侧 ✕ 把它移出清单（文件保留在磁盘，随时可加回）；底部「+ 新加入书源…」直接打开系统文件选择框（多选，定位在 `shuyuan/`，不在里面的会自动复制进去）。加入即参与搜索/下载，多个文件**自动合并并去重重复书源**（同名同站保留一份，校验过的优先），日志会报合并与去重数量。点「✔ 校验书源」会对清单内全部文件逐个做连通性体检（每文件 384 并发、HTTP 状态<400 判有效），每个文件跑完后在同目录生成有效书源表 `<文件名>.good.json`，搜索/下载只扫有效源。下次再点校验，永远是重扫原始全量表、重新生成有效表覆盖旧的。校验中途点「停止」则当前文件作废、已完成文件的 good 表保留。
+管理书源 JSON 文件：导入的文件会复制进程序数据目录，加入清单即参与搜索（多文件自动合并去重）。「校验书源」对每个文件做连通性体检并生成 `<文件名>.good.json` 有效表；「深度校验」再对活源真实试搜 + 探测分类页，产出质量等级（完整可用 > 可搜 > 搜索空转 > 试搜失败），搜索页可勾选「只搜试搜通过源」。
 
-「🔬 深度校验」更进一步：活性体检照常跑，之后对每个活着的源用关键词「我的」**真实试搜一次**、能发现/分类的再探测一次分类页，给每个源定质量等级（完整可用 > 可搜 > 搜索空转 > 试搜失败），结果写进 `<文件名>.deep.json`。搜索框旁勾上「只搜试搜通过源」，就会自动跳过"首页活着但搜索是空转/失败"的源——搜索不再做无用功；没做过深度校验的源不受影响。
+### 下载（下载页）
 
-### 选书
+搜索页勾选书后选格式与模式点「下载选中」。完成后到「下载」页统一管理：双击打开文件，或从列表删除；「打开下载目录」直达输出文件夹。
 
-| 操作 | 效果 |
-|---|---|
-| 单击 | 选中那一本（自动取消其它） |
-| Ctrl + 单击 | 加入或移出已选 |
-| Shift + 单击 | 从上次点到的行连续选到这里 |
-| 按住左键拖动 | 框选：与蓝框相交的行全部选中 |
-| Shift / Ctrl + 拖动 | 框选结果追加进已选 |
-| Esc | 取消正在拖的框选 |
-| 双击 | 直接下载这本书 |
-| 点击空白处 | 清空选中 |
+### 登录头（登录头页）
 
-顶部还有「全选 / 反选 / 清空选择 / 清除缓存」按钮。上次关程序时选中的书，下次搜到会自动恢复勾选。
+需要登录的书源在这里抓 Cookie：程序驱动 Chrome 打开各站登录页，你正常登录，Cookie 与请求头自动抓回并按站点存档。
 
-**「清除缓存」清什么**：只清可再生的缓存，不动你的配置。
+### 日志与设置（设置页）
 
-| 清除 | 保留 |
-|---|---|
-| `shuyuan/` 下的校验产物（`*.good.json` / `*.error.json` / `*.deep.json`，可能上百 MB） | 书源勾选清单（你用哪几个书源文件） |
-| 每文件的校验记录 | `shuyuan/` 里的书源文件本身 |
-| 选项打勾（模糊搜索 / 只看相关结果 / 格式 / 下载方式 / 搜索域）→ 恢复默认 | `downloads/` 里已下载的书 |
-| 上次选中的书目 | |
+全局日志在这里（所有页面的操作日志统一汇总）。设置卡片：主题切换、数据存储目录（改目录会自动迁移书源/下载/登录头并清理旧目录残留）、「清除缓存」与「清除数据」两个按钮职责不同：
 
-点之前会弹窗列清单和占用体积。清完要重新点「校验书源」才会有有效表；在那之前搜索走全量表，源多、慢一些。
-
-### 下载
-
-点「⬇ 下载选中」后弹窗，两处选择：
-
-| 选项 | 值 | 行为 |
+| | 清除缓存 | 清除数据 |
 |---|---|---|
-| 下载方式 | 下载单一 | 按顺序探测候选源（单请求 6 秒、单源 15 秒封顶），被封的标红跳过，只下第一本能下全的 |
-| 下载方式 | 合并下载 | 选中的每本都试一遍，各自独立成文件 |
-| 导出格式 | EPUB / TXT | 二选一，只生成所选格式 |
-
-下载过程中状态行显示当前候选和已用时；结束后弹出结果汇总，失败的源在表格里保持标红，下次一眼避开。
+| 校验产物 `*.good/error/deep.json` | ✔ 删 | ✔ 删 |
+| 校验记录 / 选项记忆 | ✔ 清 | ✔ 清 |
+| 登录头（Cookie / 请求头 / cookies.db） | 保留 | ✔ 删 |
+| 书源文件（内置 + 导入） | 保留 | ✔ 删（清完恢复出厂内置书源） |
+| 已下载的书 | 保留 | 保留 |
 
 ## ⚙️ 配置与数据文件
 
-| 文件 / 目录 | 说明 |
+| 位置 | 说明 |
 |---|---|
-| `shuyuan/bookSource.json` | 原始全量书源包（开源阅读格式，18.6MB / 3393 源），校验专用，可单独替换更新 |
-| `shuyuan/bookSource.good.json` | 有效书源表（点「校验书源」跑完自动生成/覆盖），搜索/下载实际使用的表；属可再生缓存，「清除缓存」会删掉它 |
-| `shuyuan/*.json` | 放入多个书源 JSON，「书源文件」下拉里「+ 新加入书源…」加入清单后合并搜索（自动去重重复源）。`*.good.json` / `*.error.json` / `*.deep.json` 是校验缓存，会被拒绝加入 |
-| `sel_state.json` | 运行状态文件：选中书目 + 勾选文件清单 + 每文件校验记录 + 选项（模糊/域/格式等）。界面上「清除缓存」即重置它（勾选清单保留）；直接删掉则全部回默认 |
-| `downloads/` | 下载输出目录，可在界面里改 |
-| `docs/` | 项目官网源码（GitHub Pages） |
-
-书源勾选清单、搜索域、模糊搜索/只看相关结果勾选、导出格式、下载方式会记在程序内，重启原样恢复；分组、关键词、输出目录每次启动回默认。（「清除缓存」会把这些重置回默认，但保留书源勾选清单。）
+| `%LOCALAPPDATA%\BookSourceAggregator\` | 数据根目录（安装版默认；设置页可改，改时自动迁移） |
+| `…\shuyuan\` | 书源 JSON 及校验产物；首次启动从安装包 `seed\bookSource.json` 播种 |
+| `…\downloads\` | 下载输出目录，「下载」页展示的就是这里 |
+| `…\sel_state.json` | 运行状态：选中书目 / 文件清单 / 校验记录 / 选项记忆 |
+| `…\auth_profile\`、`cookies.db`、`auth_state.json` | 登录头抓取档案 |
+| `%LOCALAPPDATA%\NovelDownloader\settings.json` | 界面设置（主题、首启引导、数据目录覆盖） |
 
 ## ❓ 常见问题
 
-**搜出来 0 条？**
-优先换分组（带「校验可用」字样的分组存活率最高），再打开「模糊搜索」让它换词重试。书源本身死亡率就高，这是所有聚合下载器的共同处境。
+**搜出来 0 条？** 先到书源页校验/深度校验，勾「只搜试搜通过源」再搜。书源死亡率高是所有聚合下载器的共同处境，多校验、留活源。
 
-**下载时大量 `[抓取失败]`？**
-站点限流或章节页反爬。等几分钟重试，或者换一个源的同一本书。
+**下载时大量 `[抓取失败]`？** 站点限流或章节页反爬。等几分钟重试，或换「全部下载」让每本多源各试一次。
 
-**提示「目录为空」？**
-这个源可能需要登录或已改版，程序会自动换下一个候选，不用管。（含 JS 书源已解锁；若启动日志显示「JS 引擎：未安装 mini-racer」，`pip install mini-racer` 可再解锁一批。）
+**提示「目录为空」？** 该源需要登录或已改版，程序自动换下一候选。含 JS 的源需装 mini-racer（安装包版已内置）；需登录的源去登录头页抓 Cookie。
 
-**双击 exe 没反应或冷启动很慢？**
-`--onefile` 打包的 exe 首次启动要解压到临时目录，慢一两秒正常。确认杀毒软件没有拦截。
-
-**源码启动报 `ModuleNotFoundError: tkinter`？**
-换官方安装的 Python（默认带 tkinter），再 `pip install requests beautifulsoup4 lxml websocket-client curl_cffi`。
-
-更多排查项见[技术文档 §11](docs/技术文档.md)。
+**杀毒软件报毒？** PyInstaller 单文件 exe 偶发误报，装到别的目录或加白名单即可；介意可源码运行。
 
 ## 🧩 二次开发
 
-仓库里只有运行所需的代码。规则引擎、导出、交互层的实现说明都在[技术文档](docs/技术文档.md)：
+- 架构：WinUI 3 前端 spawn `server.py`（JSONL 协议，stdin 命令 / stdout 事件流），业务逻辑在 `core/`（搜索/校验/下载/登录头/清理）与 `legado/`（规则引擎），细节见[技术文档](docs/技术文档.md)。
+- 规则 DSL 兼容矩阵、JSONL 全命令表、事件契约（15 种 kind）都在技术文档；事件契约由 `tests/test_event_contract.py` + C# 侧用例双向把守。
+- 测试：`python -m pytest tests -q`、`dotnet test frontends/winui/NovelDownloader.sln`。
 
-- [§6 规则 DSL 引擎](docs/技术文档.md)：支持与不支持的语法清单
-- [§12 扩展指引](docs/技术文档.md)：加选择器、加导出格式、加交互怎么下手
-- 打包单文件 exe：
+打安装包（需 .NET 8 SDK、Python 3.12 venv、Inno Setup 6）：
 
 ```bash
-pip install pyinstaller
-pyinstaller --noconfirm --clean --onefile --windowed --name 小说下载器 app.py
+py -3.12 -m venv .build-venv
+.build-venv\Scripts\pip install requests curl_cffi websocket-client beautifulsoup4 mini-racer pyinstaller
+build-installer.bat        # 产物: dist\书源聚合下载器-Setup-<版本>.exe
 ```
 
 ## ⚠️ 免责声明
 
-本项目仅用于学习与研究网络请求与规则解析技术。程序**不内置任何书源**，书源由使用者自行准备（通常来自网络公开共享），不保证可用性，也不对任何源的内容负责。请尊重作品版权：仅供个人试读，下载内容请于 24 小时内删除；长期阅读请支持正版（起点、晋江等官方平台）。
+本项目仅用于学习与研究网络请求与规则解析技术。安装包附带的书源清单来自公开网络共享，不保证可用性，作者不对任何源的内容负责。请尊重作品版权：仅供个人试读，下载内容请于 24 小时内删除；长期阅读请支持正版（起点、晋江等官方平台）。
 
 ## 📄 License
 
