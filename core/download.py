@@ -15,15 +15,32 @@ from core.config import DOWNLOAD_WORKERS
 
 
 # ------------------------------------------------------------- 单本导出 ----
-def export_one(book, out, fmt, batch):
-    """按选定格式导出单一格式。batch=True 时同名不同源自动加书源后缀,避免覆盖。"""
-    ext = "txt" if fmt == "txt" else "epub"
-    suffix = ""
-    if batch and (Path(out) / ("%s.%s" % (export.safe_name(book["title"]), ext))).exists():
-        suffix = "_" + export.safe_name(book.get("source", ""))
+def export_one(book, out, fmt, batch, emit=None):
+    """按选定格式导出。batch=True 时同名不同源自动加书源后缀,避免覆盖。
+
+    fmt="auto"(书源能力检测):先按 EPUB 导出,失败降级 TXT ——
+    load_book 产物是纯内存 book,重试零网络成本;返回 path 的扩展名
+    即本书实际落盘的格式。
+    """
+    def _do(ext):
+        suffix = ""
+        if batch and (Path(out) / ("%s.%s" % (export.safe_name(book["title"]),
+                                              ext))).exists():
+            suffix = "_" + export.safe_name(book.get("source", ""))
+        fn = export.export_txt if ext == "txt" else export.export_epub
+        return fn(book, out, suffix)
+
     if fmt == "txt":
-        return export.export_txt(book, out, suffix)
-    return export.export_epub(book, out, suffix)
+        return _do("txt")
+    if fmt != "auto":
+        return _do("epub")
+    try:
+        return _do("epub")
+    except Exception as e:
+        if emit:
+            emit(("log", "↻ 《%s》EPUB 导出失败(%s),降级 TXT"
+                  % (book["title"], e)))
+        return _do("txt")
 
 
 def try_one(h, prog, out, fmt, batch, *, emit, stop):
@@ -54,7 +71,7 @@ def try_one(h, prog, out, fmt, batch, *, emit, stop):
         raise RuntimeError("已取消")
     if book["ok"] == 0:
         raise RuntimeError("正文 0/%d 章成功(书源被封)" % book["total"])
-    path = export_one(book, out, fmt, batch)
+    path = export_one(book, out, fmt, batch, emit=emit)
     emit(("log", "《%s》 %d/%d 章 · 源[%s] → %s" %
           (book["title"], book["ok"], book["total"], srcname, path)))
     return book, path

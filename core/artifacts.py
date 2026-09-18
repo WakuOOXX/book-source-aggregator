@@ -18,7 +18,7 @@ from core.config import (AUTO_IDLE_SECS, AUTO_IDLE_FAST, AUTO_PARA_TABS,
 
 
 def good_table_path(origin: Path) -> Path:
-    """原始全量表对应的有效书源表:<原名>.good.json(与 verify_sources.py 输出一致)。"""
+    """原始全量表对应的有效书源表:<原名>.good.json。"""
     name = origin.name
     if name.lower().endswith(".json"):
         return origin.with_name(name[:-5] + ".good.json")
@@ -219,14 +219,39 @@ def _tab_due(arrived, idle, since_act, opened_for):
     return "wait"
 
 
+# --------------------------------------------------------------- 书源分组 ----
+
+
+def split_groups(source):
+    """书源 bookSourceGroup → 分组名列表(逗号/换行分隔,去空白与空项)。"""
+    raw = (source.get("bookSourceGroup") or "")
+    return [g.strip() for g in re.split(r"[,\n]", str(raw)) if g.strip()]
+
+
+def collect_groups(srcs):
+    """全部书源的分组名合集(排序去重);未标分组的源不归入任何分组。"""
+    groups = set()
+    for s in srcs:
+        groups.update(split_groups(s))
+    return sorted(groups)
+
+
+def filter_by_group(srcs, group):
+    """按分组过滤书源(纯函数):group 为空或「全部」原样返回。"""
+    g = (group or "").strip()
+    if not g or g == "全部":
+        return srcs
+    return [s for s in srcs if g in split_groups(s)]
+
+
 # ------------------------------------------------------------- 登录头存储 ----
 
 
 def auth_state_path() -> Path:
     """每源登录头存储:shuyuan/auth_state.json。
 
-    属用户凭据,**不属于缓存** —— 「清除缓存」不清理,只能在新加的
-    「登录头」管理窗口里查看/修改/清空。写入与 good 表同款原子写。
+    属用户凭据,**不属于缓存** —— 「清除缓存」不清理,在登录头页查看/修改/清空,
+    「清除数据」(data.clear)会一并带走。写入与 good 表同款原子写。
     """
     return _config.SOURCE_DIR / "auth_state.json"
 

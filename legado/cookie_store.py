@@ -15,9 +15,18 @@ import time
 from pathlib import Path
 from urllib.parse import urlsplit
 
-_HERE = Path(__file__).resolve().parent
-DB_PATH = Path(os.environ.get("BOOKDL_COOKIE_DB")
-               or (_HERE.parent / "shuyuan" / "cookies.db"))
+
+def db_path() -> Path:
+    """cookie 库路径:BOOKDL_COOKIE_DB 环境变量 > 当前数据目录/shuyuan/cookies.db。
+
+    动态解析(每次调用),数据目录热迁移(core.config.set_data_dir)后
+    自动跟随新目录;不缓存,避免 import 顺序造成路径固化。
+    """
+    env = (os.environ.get("BOOKDL_COOKIE_DB") or "").strip()
+    if env:
+        return Path(env)
+    from core import config
+    return config.DATA_DIR / "shuyuan" / "cookies.db"
 
 _lock = threading.Lock()
 _mem = {}            # domain(小写 host) -> {name: value}
@@ -32,7 +41,7 @@ def _load():
         if _loaded:
             return
         try:
-            con = sqlite3.connect(str(DB_PATH))
+            con = sqlite3.connect(str(db_path()))
             try:
                 con.execute("CREATE TABLE IF NOT EXISTS cookie("
                             "domain TEXT PRIMARY KEY, cookies TEXT, updated REAL)")
@@ -144,9 +153,10 @@ def flush():
     """内存 → sqlite 全量落盘(调用方持有语义:幂等、可并发重入)。"""
     with _lock:
         snap = {d: dict(ck) for d, ck in _mem.items()}
+    p = db_path()
     try:
-        DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-        con = sqlite3.connect(str(DB_PATH))
+        p.parent.mkdir(parents=True, exist_ok=True)
+        con = sqlite3.connect(str(p))
         try:
             now = time.time()
             con.execute("CREATE TABLE IF NOT EXISTS cookie("

@@ -34,7 +34,8 @@ from concurrent.futures import ThreadPoolExecutor
 import cdp_cookie
 from legado import engine
 
-from core.config import APP_DIR, AUTO_IDLE_SECS, AUTO_PARA_SETTLE, AUTO_PARA_TABS
+from core import config as _config
+from core.config import AUTO_IDLE_SECS, AUTO_PARA_SETTLE, AUTO_PARA_TABS
 from core.artifacts import (_url_host, _merge_cookie_str, _host_match,
                             _para_idle, _tab_due, save_auth_state)
 
@@ -159,7 +160,7 @@ class AuthManager:
     def __init__(self, auth, emit, profile_dir=None):
         self.auth = auth                 # 与 UI 共享同一 dict(●标记/列表刷新读它)
         self.emit = emit                 # emit((kind, payload))
-        self.profile = profile_dir or (APP_DIR / "auth_profile")
+        self.profile = profile_dir or _config.AUTH_PROFILE_DIR
         self.handle = None               # CDP 浏览器句柄(单站/批量共用)
         # 状态机字段(原 open_auth_manager 的 batch dict)
         self.active = False

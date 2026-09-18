@@ -9,18 +9,60 @@ CPU 全程只占 1~1.4/12 核 —— 瓶颈是"最慢单源最多等 12s"的超�
 注意:小批量搜索(十几个到几百个源)提并发没有意义,因为总耗时会撞上
 12s 超时下界:实测 240 个源在并发 40~600 之间都是 12s 左右。
 """
+import os
 import sys
 from pathlib import Path
 
-# ---- 运行目录 ------------------------------------------------------------
-if getattr(sys, "frozen", False):          # PyInstaller 打包后:资源文件放 exe 同目录
+# ---- 运行目录 / 数据目录 ---------------------------------------------------
+# APP_DIR: 程序资源定位(exe/仓库根),只读用途;
+# DATA_DIR: 全部用户数据的根(书源目录/下载/记忆/登录抓取 profile),
+#   优先级 BOOKDL_DATA_DIR 环境变量 > 打包形态 %LOCALAPPDATA%\BookSourceAggregator
+#   > 开发形态仓库根。打包安装到 Program Files 后 exe 目录不可写,
+#   所以 frozen 默认必须落 %LOCALAPPDATA%。
+if getattr(sys, "frozen", False):          # PyInstaller 打包后
     APP_DIR = Path(sys.executable).resolve().parent
 else:
     APP_DIR = Path(__file__).resolve().parent.parent
-SOURCE_DIR = APP_DIR / "shuyuan"           # 书源 JSON 统一放这里
+
+
+def _default_data_dir() -> Path:
+    if getattr(sys, "frozen", False):
+        base = os.environ.get("LOCALAPPDATA") or str(
+            Path.home() / "AppData" / "Local")
+        return Path(base) / "BookSourceAggregator"
+    return APP_DIR
+
+
+def _resolve_data_dir() -> Path:
+    env = (os.environ.get("BOOKDL_DATA_DIR") or "").strip()
+    return Path(env).resolve() if env else _default_data_dir()
+
+
+DATA_DIR = _resolve_data_dir()
+SEED_SOURCE = APP_DIR / "seed" / "bookSource.json"   # 出厂种子书源(安装包内置)
+
+SOURCE_DIR = DATA_DIR / "shuyuan"          # 书源 JSON 统一放这里
 DEFAULT_SOURCE = SOURCE_DIR / "bookSource.json"
-DEFAULT_OUT = APP_DIR / "downloads"
-STATE_FILE = APP_DIR / "sel_state.json"    # 多选/选中项记忆 + 校验原始表路径
+DEFAULT_OUT = DATA_DIR / "downloads"
+STATE_FILE = DATA_DIR / "sel_state.json"   # 多选/选中项记忆 + 校验原始表路径
+AUTH_PROFILE_DIR = DATA_DIR / "auth_profile"   # 登录抓取浏览器 profile
+
+
+def set_data_dir(path) -> Path:
+    """把全部用户数据路径整体改指新目录(server.data.setdir 迁移后调用)。
+
+    各路径都是本模块级变量,消费方(core.artifacts / server)经
+    `_config.XXX` 动态读取,改完即生效;cookie 库路径同样动态解析。
+    """
+    global DATA_DIR, SOURCE_DIR, DEFAULT_SOURCE, DEFAULT_OUT, STATE_FILE
+    global AUTH_PROFILE_DIR
+    DATA_DIR = Path(path).resolve()
+    SOURCE_DIR = DATA_DIR / "shuyuan"
+    DEFAULT_SOURCE = SOURCE_DIR / "bookSource.json"
+    DEFAULT_OUT = DATA_DIR / "downloads"
+    STATE_FILE = DATA_DIR / "sel_state.json"
+    AUTH_PROFILE_DIR = DATA_DIR / "auth_profile"
+    return DATA_DIR
 
 # ---- 并发度 ---------------------------------------------------------------
 # 搜索与校验:每个书源只发 1 个请求,3393 个源分布在 2107 个域名上,

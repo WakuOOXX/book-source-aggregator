@@ -39,6 +39,7 @@ error(Android 线踩过"两参调用"的真 bug,此处固化防线)。
 字段,其余字段名与 core 结构逐字同名;章级进度仍由 dlprog 事件承载。
 """
 import json
+import os
 import shutil
 import sys
 import threading
@@ -51,7 +52,8 @@ import core
 from core import config as _config
 from core import mem as core_mem
 from core import auth_manager as core_auth
-from core.artifacts import is_verify_artifact, load_auth_state, _url_host
+from core.artifacts import (collect_groups, filter_by_group, is_verify_artifact,
+                            load_auth_state, _url_host)
 from core.download import download_run
 from core.search import relevant, search_run
 from core.verify import load_deep_tables, verify_run
@@ -61,7 +63,7 @@ try:
 except Exception:                                  # 无 CDP 依赖时降级(仍给接口)
     cdp_cookie = None
 
-VERSION = "1.9.1"
+VERSION = "1.31"
 
 # 重操作:同一时刻只允许一个(busy 语义)。
 HEAVY_CMDS = ("search", "verify", "download", "auth.fetch")
@@ -115,12 +117,34 @@ def _discover_files(source_dir):
                   and p.name != "auth_state.json")
 
 
+def _seed_source(log=None):
+    """内置书源播种:数据目录无 bookSource.json 且安装包自带 seed/ 时复制过去。
+
+    覆盖两个场景:① 全新安装(数据目录空)首次就绪;② 清除数据后恢复出厂内置
+    书源。种子文件随 exe 打包(installer 把构建机 shuyuan/bookSource.json 放进
+    seed/);无种子则静默跳过(仓库开发形态本就有真实 bookSource.json)。
+    """
+    try:
+        if _config.DEFAULT_SOURCE.exists() or not _config.SEED_SOURCE.exists():
+            return False
+        _config.SOURCE_DIR.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(str(_config.SEED_SOURCE), str(_config.DEFAULT_SOURCE))
+        if log:
+            log("已播种内置书源: %s" % _config.DEFAULT_SOURCE.name)
+        return True
+    except Exception as e:
+        if log:
+            log("⚠ 内置书源播种失败: %s" % e)
+        return False
+
+
 def _init_engine(source_dir, log=None):
-    """启动注入:登录头 + 深度判定表(对应 cli._init_engine / App.__init__)。
+    """启动注入:播种内置书源 + 登录头 + 深度判定表(对应 cli._init_engine)。
 
     set_auth 灌登录头,load_deep_tables 灌深度判定表。log 为消息回调(可省)。
     """
     _config.SOURCE_DIR = Path(source_dir)
+    _seed_source(log)
     auth = load_auth_state()
     core.set_auth(auth)
     fns = [p.name for p in _discover_files(_config.SOURCE_DIR)]
@@ -189,6 +213,7 @@ class Server:
         self._thread = None
         self._auth_handle = None            # CDP 抓取浏览器句柄
         self.checked_files = self._load_checked()   # None = 清单未定(用全部)
+        self._groups = None                     # 分组名缓存(sources 变更后置 None 重算)
 
     # ---------------------------------------------------------- 底层输出 ----
     def _write(self, obj):
@@ -293,7 +318,7 @@ class Server:
 
     # --------------------------------------------------- sources 清单 -------
     def _load_checked(self):
-        """从运行记忆恢复书源清单(与 app.checked_files 同源:sel_state["sources"])。"""
+        """从运行记忆恢复书源清单(键 = sel_state["sources"])。"""
         if not self._state_file:
             return None
         try:
@@ -318,10 +343,20 @@ class Server:
         files = self._all_files()
         srcs = _merge_sources(self.source_dir, self._checked(), log=None)
         auth = load_auth_state()
+        self._groups = collect_groups(srcs)
+        info = dict(self._paths_info())
+        info["source_dir"] = str(self.source_dir)   # 实例口径优先(测试注入)
         self.reply("hello", cmd="init", version=VERSION,
                    js=bool(jsengine.HAS_JS), sources=len(srcs),
                    files=len(files), checked=len(self._checked()),
-                   auth=len(auth), source_dir=str(self.source_dir))
+                   auth=len(auth), groups=self._groups, **info)
+
+    def _get_groups(self):
+        """分组名列表(缓存):hello 未发/清单变更后按需合并工作源重算。"""
+        if self._groups is None:
+            srcs = _merge_sources(self.source_dir, self._checked(), log=None)
+            self._groups = collect_groups(srcs)
+        return self._groups
 
     def _cmd_config_get(self, msg):
         C = _config
@@ -331,11 +366,262 @@ class Server:
                  download_workers=C.DOWNLOAD_WORKERS,
                  deep_keyword=C.DEEP_KEYWORD,
                  auto_para_tabs=C.AUTO_PARA_TABS,
-                 source_dir=str(C.SOURCE_DIR),
-                 default_source=str(C.DEFAULT_SOURCE),
-                 default_out=str(C.DEFAULT_OUT),
-                 state_file=str(C.STATE_FILE),
-                 version=VERSION, js=bool(jsengine.HAS_JS))
+                 version=VERSION, js=bool(jsengine.HAS_JS),
+                 **self._paths_info())
+
+    # ------------------------------------------------ data 目录命令族 -------
+    def _paths_info(self):
+        """当前数据布局(前端展示/迁移确认都以这里为准)。"""
+        C = _config
+        return {"data_dir": str(C.DATA_DIR),
+                "source_dir": str(C.SOURCE_DIR),
+                "default_source": str(C.DEFAULT_SOURCE),
+                "default_out": str(C.DEFAULT_OUT),
+                "state_file": str(C.STATE_FILE),
+                "auth_profile_dir": str(C.AUTH_PROFILE_DIR)}
+
+    def _guard_idle(self, cmd):
+        """轻量命令也要门禁:重操作在跑时拒绝(返回 True = 拒了)。"""
+        with self._lock:
+            busy = self.busy
+            running = self._busy_cmd
+        if busy:
+            self.reply("busy", cmd=cmd, running=running)
+        return busy
+
+    def _cmd_data_getdir(self, msg):
+        self.ack("data.getdir", **self._paths_info())
+
+    def _cmd_data_setdir(self, msg):
+        """切换数据存储目录;migrate=true(默认)把已有数据整体搬到新目录。
+
+        搬迁清单 = 数据目录下的固定项(shuyuan/downloads/auth_profile/
+        sel_state.json)。目标已存在同名项 → 保留双方不覆盖并在 moved 里
+        标注;任何一项搬失败 → 已搬项原路移回后回 error(半迁移不留)。
+        完成切换后按新目录重新播种并重跑引擎注入(auth/deep 表)。
+        """
+        if self._guard_idle("data.setdir"):
+            return
+        raw = (msg.get("path") or "").strip()
+        if not raw:
+            self.error("data.setdir 缺少 path", cmd="data.setdir")
+            return
+        try:
+            new = Path(raw).resolve()
+        except Exception as e:
+            self.error("data.setdir 路径非法: %s" % e, cmd="data.setdir")
+            return
+        old = Path(_config.DATA_DIR).resolve()
+        if new == old:
+            self.ack("data.setdir", moved=[], unchanged=True,
+                     **self._paths_info())
+            return
+        migrate = bool(msg.get("migrate", True))
+        moved, kept_old = [], []
+        if migrate:
+            try:
+                new.mkdir(parents=True, exist_ok=True)
+            except Exception as e:
+                self.error("data.setdir 目标目录创建失败: %s" % e,
+                           cmd="data.setdir")
+                return
+            try:
+                from legado import cookie_store
+                cookie_store.flush()        # 内存镜像先落旧库,随文件一起搬
+            except Exception:
+                pass
+            failed = []
+            for name in ("shuyuan", "downloads", "auth_profile",
+                         "sel_state.json"):
+                src = old / name
+                if not src.exists():
+                    continue
+                if (new / name).exists():
+                    kept_old.append(name)   # 目标已有:双方都留,不动旧文件
+                    continue
+                try:
+                    shutil.move(str(src), str(new / name))
+                    moved.append(name)
+                except Exception as e:
+                    failed.append("%s: %s" % (name, e))
+                    break
+            if failed:
+                undone = []
+                for name in moved:
+                    try:
+                        shutil.move(str(new / name), str(old / name))
+                        undone.append(name)
+                    except Exception:
+                        pass
+                moved[:] = undone
+                self.error("data.setdir 迁移失败已回滚(%s): %s"
+                           % (failed[0], "旧目录数据未动" if len(undone) ==
+                              len(moved) else "部分回滚,请检查"),
+                           cmd="data.setdir")
+                return
+        _config.set_data_dir(new)
+        self._reattach_paths()
+        self.ack("data.setdir", moved=moved, kept_old=kept_old,
+                 migrate=migrate, **self._paths_info())
+
+    def _reattach_paths(self):
+        """set_data_dir 后把实例状态与引擎重新指到新目录(与启动同口径)。"""
+        self.source_dir = _config.SOURCE_DIR
+        if self._state_file is not False:
+            self._state_file = _config.STATE_FILE
+        self.checked_files = self._load_checked()
+        self._groups = None
+        _init_engine(self.source_dir, log=self.emit_log)
+
+    # --------------------------------------------------- 清理命令族 ---------
+    def _cmd_cache_clear(self, msg):
+        """清缓存:只删可再生的校验产物 + 校验记忆,选项回默认。
+
+        保留:书源勾选清单、登录头(auth_state.json)、cookie 库、书源文件、
+        已下载的书。语义与旧版 app._cache_clear 同口径。
+        """
+        if self._guard_idle("cache.clear"):
+            return
+        sd = Path(self.source_dir)
+        deleted, failed, freed = [], [], 0
+        if sd.exists():
+            for p in sorted(sd.iterdir()):
+                if not (p.is_file() and is_verify_artifact(p.name)):
+                    continue
+                try:
+                    freed += p.stat().st_size
+                    p.unlink()
+                    deleted.append(p.name)
+                except Exception as e:
+                    failed.append("%s: %s" % (p.name, e))
+        if self._state_file:
+            try:
+                mem = core_mem.load_state(self._state_file)
+                mem.update({"selected": [], "verify_origin": "",
+                            "verify_done": {}, "verify_dones": {},
+                            "fuzzy": True, "rel": True, "deep_only": False,
+                            "para_tabs": _config.AUTO_PARA_TABS})
+                core_mem.save_state(self._state_file, mem)
+            except Exception as e:
+                failed.append("sel_state: %s" % e)
+        _init_engine(sd, log=None)      # 判定表已随产物清空,重载
+        self.ack("cache.clear", deleted=deleted, failed=failed,
+                 freed_bytes=freed,
+                 note="校验产物与校验记忆已清;登录头/书源/下载保留")
+
+    def _cmd_data_clear(self, msg):
+        """清除数据:登录头 + cookie 库 + 抓取 profile + 全部书源文件(内置与
+        导入)+ 运行记忆,恢复出厂状态。downloads 不动(书是用户资产)。
+
+        清完从 seed/ 重新播种内置书源,应用仍可开箱使用。
+        """
+        if self._guard_idle("data.clear"):
+            return
+        from legado import cookie_store
+        sd = Path(self.source_dir)
+        deleted, failed = [], []
+
+        def _rm(target, label):
+            try:
+                p = Path(target)
+                if not p.exists():
+                    return
+                if p.is_dir():
+                    shutil.rmtree(str(p))
+                else:
+                    p.unlink()
+                deleted.append(label)
+            except Exception as e:
+                failed.append("%s: %s" % (label, e))
+
+        try:
+            cookie_store.clear()        # 内存镜像清空(同时向库写空表)
+        except Exception:
+            pass
+        db = cookie_store.db_path()
+        _rm(db, "cookies.db")
+        _rm(Path(str(db) + "-wal"), "cookies.db-wal")
+        _rm(Path(str(db) + "-shm"), "cookies.db-shm")
+        _rm(sd / "auth_state.json", "auth_state.json")
+        _rm(_config.AUTH_PROFILE_DIR, "auth_profile")
+        if self._state_file:
+            _rm(self._state_file, "sel_state.json")
+        if sd.exists():
+            for p in sorted(sd.iterdir()):
+                if p.is_file() and p.suffix.lower() == ".json":
+                    _rm(p, p.name)
+        try:
+            core.set_auth({})
+        except Exception as e:
+            failed.append("engine auth: %s" % e)
+        self.checked_files = None       # 清单随书源文件一起归零
+        self._groups = None
+        _init_engine(sd, log=self.emit_log)   # 内含内置书源播种
+        self.ack("data.clear", deleted=deleted, failed=failed,
+                 note="登录头/书源文件/记忆已清,内置书源已恢复;"
+                      "下载目录未动")
+
+    # ------------------------------------------------ downloads 命令族 ------
+    def _downloads_root(self):
+        return Path(_config.DEFAULT_OUT).resolve()
+
+    def _safe_download_path(self, raw):
+        """downloads.* 路径门禁:只允许下载目录本身或其下文件(防任意删/开)。"""
+        if not raw:
+            return None
+        root = self._downloads_root()
+        try:
+            p = Path(str(raw)).resolve()
+        except Exception:
+            return None
+        return p if p == root or root in p.parents else None
+
+    def _cmd_downloads_list(self, msg):
+        root = self._downloads_root()
+        items = []
+        try:
+            if root.exists():
+                for p in root.iterdir():
+                    if p.is_file() and p.suffix.lower() in (".txt", ".epub"):
+                        st = p.stat()
+                        items.append({
+                            "name": p.stem, "file": p.name, "path": str(p),
+                            "ext": p.suffix.lower().lstrip("."),
+                            "size": st.st_size, "mtime": st.st_mtime})
+        except Exception as e:
+            self.error("downloads.list 读取失败: %s" % e, cmd="downloads.list")
+            return
+        items.sort(key=lambda d: -d["mtime"])
+        self.ack("downloads.list", dir=str(root), items=items)
+
+    def _cmd_downloads_open(self, msg):
+        p = self._safe_download_path(msg.get("path"))
+        if p is None or not p.exists():
+            self.error("downloads.open 路径无效或不在下载目录内",
+                       cmd="downloads.open")
+            return
+        try:
+            if msg.get("reveal") and p.is_file():
+                os.startfile(str(p.parent), "explore")   # 打开目录并选中
+            else:
+                os.startfile(str(p))
+            self.ack("downloads.open", path=str(p))
+        except Exception as e:
+            self.error("downloads.open 失败: %s" % e, cmd="downloads.open")
+
+    def _cmd_downloads_delete(self, msg):
+        if self._guard_idle("downloads.delete"):
+            return
+        p = self._safe_download_path(msg.get("path"))
+        if p is None or not p.is_file():
+            self.error("downloads.delete 路径无效或不在下载目录内",
+                       cmd="downloads.delete")
+            return
+        try:
+            p.unlink()
+            self.ack("downloads.delete", path=str(p), deleted=True)
+        except Exception as e:
+            self.error("downloads.delete 失败: %s" % e, cmd="downloads.delete")
 
     def _cmd_search(self, msg):
         key = (msg.get("keyword") or "").strip()
@@ -346,11 +632,16 @@ class Server:
         rel = bool(msg.get("rel", True))
         domain = msg.get("domain") or "自动"
         deep_only = bool(msg.get("deep_only", False))
+        group = (msg.get("group") or "全部").strip()
         self._start_heavy("search", lambda stop: self._run_search(
-            key, fuzzy, rel, domain, deep_only, stop))
+            key, fuzzy, rel, domain, deep_only, group, stop))
 
-    def _run_search(self, key, fuzzy, rel, domain, deep_only, stop):
+    def _run_search(self, key, fuzzy, rel, domain, deep_only, group, stop):
         srcs = _merge_sources(self.source_dir, self._checked(), log=self.emit_log)
+        if group and group != "全部":
+            total = len(srcs)
+            srcs = filter_by_group(srcs, group)
+            self.emit_log("分组「%s」: %d/%d 源参与搜索" % (group, len(srcs), total))
         if deep_only:
             skipped = [s for s in srcs if engine.deep_search_ok(s) is False]
             if skipped:
@@ -399,7 +690,9 @@ class Server:
             return
         # 前端口径 merge → core 内部口径 batch(照抄 cli.cmd_download 的映射)。
         mode = "batch" if (msg.get("mode") or "single") == "merge" else "single"
-        fmt = msg.get("fmt") or "epub"
+        fmt = msg.get("fmt") or "auto"
+        if fmt not in ("txt", "epub", "auto"):
+            fmt = "auto"
         out = str(msg.get("out") or _config.DEFAULT_OUT)
         self._start_heavy("download", lambda stop: self._run_download(
             hits, out, mode, fmt, stop))
@@ -429,7 +722,8 @@ class Server:
                  files=[{"name": fn, "checked": fn in checked,
                          "exists": (self.source_dir / fn).exists()}
                         for fn in allf],
-                 checked=self._checked(), dir=str(self.source_dir))
+                 checked=self._checked(), dir=str(self.source_dir),
+                 groups=self._get_groups())
 
     def _cmd_sources_add(self, msg):
         paths = msg.get("paths")
@@ -460,6 +754,7 @@ class Server:
                 checked.append(src.name)
                 added.append(src.name)
         self.checked_files = checked
+        self._groups = None
         self.ack("sources.add", added=added, copied=copied, skipped=skipped,
                  checked=checked)
 
@@ -472,8 +767,9 @@ class Server:
         if fn in checked:
             checked.remove(fn)
         self.checked_files = checked
+        self._groups = None
         self.ack("sources.remove", removed=fn, checked=checked,
-                 note="仅移出清单,磁盘文件保留在 shuyuan/")
+                 note="仅移出清单, 磁盘文件保留在数据目录")
 
     # ------------------------------------------------------- auth 命令族 -----
     def _cmd_auth_list(self, msg):
@@ -525,7 +821,7 @@ class Server:
 
     def _run_auth_launch(self, msg):
         url = (msg.get("url") or "").strip()
-        profile = _config.APP_DIR / "auth_profile"
+        profile = _config.AUTH_PROFILE_DIR
         try:
             self._auth_handle = cdp_cookie.launch_for_auth(url, profile)
         except Exception as e:

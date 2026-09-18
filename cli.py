@@ -330,8 +330,8 @@ def build_parser():
 
     d = sub.add_parser("download", help="搜索并下载(交互式选择或 --all)")
     d.add_argument("keyword")
-    d.add_argument("--fmt", choices=("epub", "txt"), default="epub",
-                   help="导出格式(缺省 epub)")
+    d.add_argument("--fmt", choices=("epub", "txt", "auto"), default="epub",
+                   help="导出格式(缺省 epub;auto=优先 epub,导出失败降级 txt)")
     d.add_argument("--out", default=str(_config.DEFAULT_OUT), metavar="DIR",
                    help="导出目录(缺省 downloads/)")
     d.add_argument("--mode", choices=("single", "merge"), default="single",
