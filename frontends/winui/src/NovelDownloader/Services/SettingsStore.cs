@@ -18,10 +18,10 @@ public enum ThemeMode
 }
 
 /// <summary>
-/// M5 本地设置存储: 主题 / 首启引导标记。
+/// 本地设置存储: 主题 / 首启引导标记 / 自定义数据目录。
 /// 落盘 <c>%LOCALAPPDATA%\NovelDownloader\settings.json</c> (UTF-8, 缩进)。
 /// 取舍说明: 不用 Windows.Storage (ApplicationData 在 WindowsPackageType=None 下不可用),
-/// 也不引第三方配置库 —— 设置项极少 (两个布尔/枚举), 一个 60 行的 JsonSerializer 足够;
+/// 也不引第三方配置库 —— 设置项极少, 一个 JsonSerializer 足够;
 /// 文件不存在 / 读损坏时全部回默认值, 绝不因配置问题挡启动。
 /// 目录可注入 (directory 参数) —— 单测指向临时目录, 生产默认走 LOCALAPPDATA。
 /// </summary>
@@ -33,6 +33,7 @@ public sealed class SettingsStore
     private readonly string _path;
     private ThemeMode _theme = ThemeMode.System;
     private bool _seenOnboarding;
+    private string? _dataDir;
 
     /// <summary>持久化目录 (测试注入; 生产为 LOCALAPPDATA\NovelDownloader)。</summary>
     public string DirectoryPath { get; }
@@ -48,6 +49,13 @@ public sealed class SettingsStore
     {
         get => _seenOnboarding;
         private set => _seenOnboarding = value;
+    }
+
+    /// <summary>用户自定义的 Python 侧数据存储目录; null = 用后端默认。</summary>
+    public string? DataDir
+    {
+        get => _dataDir;
+        private set => _dataDir = value;
     }
 
     public SettingsStore(string? directory = null)
@@ -83,6 +91,19 @@ public sealed class SettingsStore
         Save();
     }
 
+    /// <summary>设置数据存储目录并立即持久化 (null/空白 = 恢复后端默认)。</summary>
+    public void SetDataDir(string? path)
+    {
+        var norm = string.IsNullOrWhiteSpace(path) ? null : path.Trim();
+        if (_dataDir == norm)
+        {
+            return;
+        }
+
+        _dataDir = norm;
+        Save();
+    }
+
     /// <summary>持久化文件的绝对路径 (诊断/展示用)。</summary>
     public string SettingsFilePath => _path;
 
@@ -110,12 +131,19 @@ public sealed class SettingsStore
             {
                 _seenOnboarding = true;
             }
+
+            if (root.TryGetProperty("data_dir", out var dirEl) && dirEl.ValueKind == JsonValueKind.String)
+            {
+                var s = dirEl.GetString();
+                _dataDir = string.IsNullOrWhiteSpace(s) ? null : s!.Trim();
+            }
         }
         catch
         {
             // 配置损坏/不可读: 全部回默认值, 不挡启动。
             _theme = ThemeMode.System;
             _seenOnboarding = false;
+            _dataDir = null;
         }
     }
 
@@ -128,6 +156,7 @@ public sealed class SettingsStore
             {
                 theme = (int)_theme,
                 seen_onboarding = _seenOnboarding,
+                data_dir = _dataDir,
             }, new JsonSerializerOptions { WriteIndented = true });
             File.WriteAllText(_path, json);
         }

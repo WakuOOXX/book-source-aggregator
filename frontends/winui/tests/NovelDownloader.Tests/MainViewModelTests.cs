@@ -43,6 +43,22 @@ public class MainViewModelTests
     }
 
     [Fact]
+    public void Hello_WithGroups_PopulatesSourceGroups_AndStaleSelectionResets()
+    {
+        var vm = new MainViewModel();
+        vm.ApplyLine("""{"type":"hello","cmd":"init","version":"1.31","js":true,"sources":10,"files":3,"checked":3,"auth":0,"source_dir":"D:\\s","groups":["玄幻","都市"]}""");
+
+        Assert.Equal(new[] { "全部", "玄幻", "都市" }, vm.SourceGroups);
+        Assert.Equal("全部", vm.SourceGroup);
+
+        vm.SourceGroup = "玄幻";
+        vm.ApplyLine(HelloLine());
+
+        Assert.Equal(new[] { "全部" }, vm.SourceGroups);
+        Assert.Equal("全部", vm.SourceGroup);
+    }
+
+    [Fact]
     public void Hit_AccumulatesInObservableCollectionAndCount()
     {
         var vm = new MainViewModel();
@@ -276,7 +292,7 @@ public class MainViewModelTests
     }
 
     [Fact]
-    public void EventRouter_AckAndStderr_AreSurfacedToLog()
+    public void EventRouter_PlainAck_IsSilent_NoProtocolJargonInLog()
     {
         var client = new BackendClient();
         using var router = new EventRouter(client, dispatcher: null);
@@ -285,21 +301,53 @@ public class MainViewModelTests
 
         router.RouteRawLine("""{"type":"ack","cmd":"stop","stopped":true,"busy":false,"running":""}""");
 
-        Assert.Contains(vm.LogSnapshot(), l => l.Contains("ack stop"));
+        // 纯回执不再刷日志, 命令名等协议术语不得泄漏到运行日志。
+        Assert.DoesNotContain(vm.LogSnapshot(), l => l.Contains("ack") || l.Contains("stop"));
     }
 
-    // ------------------------------------------------------------- 下载测试 (M2) --
+    // ------------------------------------------------------------- 下载测试 --
+
+    [Fact]
+    public void Defaults_AutoFormatPickOneMode_NoOutDirUntilHello()
+    {
+        var vm = new MainViewModel();
+
+        Assert.Equal("万里挑一", vm.DownloadMode);
+        Assert.Equal("自动", vm.ExportFormat);
+        Assert.Equal("", vm.OutDir);
+
+        vm.ApplyHello(new BackendHello("1.31", Js: true, Sources: 1, Files: 1, Checked: 1,
+            Auth: 0, SourceDir: "shuyuan", DataDir: @"D:\bookdata", DefaultOut: @"D:\bookdata\downloads"));
+
+        Assert.Equal(@"D:\bookdata\downloads", vm.OutDir);
+    }
+
+    [Theory]
+    [InlineData("万里挑一", "single")]
+    [InlineData("全部下载", "merge")]
+    [InlineData("合并", "merge")]
+    [InlineData("单一", "single")]
+    public void MapModeUiTextToWireProtocol(string ui, string wire)
+        => Assert.Equal(wire, BackendClient.MapMode(ui));
+
+    [Theory]
+    [InlineData(null, "auto")]
+    [InlineData("自动", "auto")]
+    [InlineData("EPUB", "epub")]
+    [InlineData("TXT", "txt")]
+    public void MapFormatUiTextToWireProtocol(string? ui, string wire)
+        => Assert.Equal(wire, BackendClient.MapFormat(ui));
 
     [Fact]
     public void BeginDownload_TransitionsToDownloadingState()
     {
         var vm = new MainViewModel();
 
-        vm.BeginDownload(3, "单一", "TXT");
+        vm.BeginDownload(3, "万里挑一", "自动");
 
         Assert.True(vm.IsDownloading);
-        Assert.Equal("单一", vm.DownloadMode);
-        Assert.Equal("TXT", vm.ExportFormat);
+        Assert.Equal("万里挑一", vm.DownloadMode);
+        Assert.Equal("自动", vm.ExportFormat);
         Assert.Contains("停止下载", vm.DownloadButtonText);
         Assert.Contains(vm.LogSnapshot(), l => l.Contains("开始下载"));
     }
@@ -308,7 +356,7 @@ public class MainViewModelTests
     public void DownloadBookEvent_UpdatesProgressAndLogs()
     {
         var vm = new MainViewModel();
-        vm.BeginDownload(3, "单一", "TXT");
+        vm.BeginDownload(3, "万里挑一", "自动");
 
         vm.ApplyLine("""{"type":"event","kind":"dlbook","payload":[0,3,"诡秘之主","起点","探测目录…"]}""");
 
@@ -320,7 +368,7 @@ public class MainViewModelTests
     public void DownloadProgressEvent_UpdatesChapterCount()
     {
         var vm = new MainViewModel();
-        vm.BeginDownload(1, "单一", "TXT");
+        vm.BeginDownload(1, "万里挑一", "自动");
 
         vm.ApplyLine("""{"type":"event","kind":"dlprog","payload":[50,200,"第50章"]}""");
 
@@ -331,7 +379,7 @@ public class MainViewModelTests
     public void DownloadOneEvent_AddsToQueueAndLogs()
     {
         var vm = new MainViewModel();
-        vm.BeginDownload(2, "单一", "TXT");
+        vm.BeginDownload(2, "万里挑一", "自动");
 
         vm.ApplyLine("""{"type":"event","kind":"dlone","payload":[{"title":"诡秘之主","author":"乌贼","kind":"玄幻","source":"起点","ok":1450,"total":1450},"D:/out/诡秘之主.txt",0,2]}""");
 
@@ -359,7 +407,7 @@ public class MainViewModelTests
     public void DownloadCancelEvent_FinishesDownloadingState()
     {
         var vm = new MainViewModel();
-        vm.BeginDownload(2, "单一", "TXT");
+        vm.BeginDownload(2, "万里挑一", "自动");
 
         vm.ApplyLine("""{"type":"event","kind":"dlcancel","payload":[[],[[0,"A","源X","取消"]]]}""");
 

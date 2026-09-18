@@ -200,7 +200,7 @@ public class AuthViewModelTests
 
         vm.OnAuthSavedAck(5);
 
-        Assert.Contains(vm.LogSnapshot(), l => l.Contains("auth.save"));
+        Assert.Contains(vm.LogSnapshot(), l => l.Contains("已保存"));
         Assert.Contains(vm.LogSnapshot(), l => l.Contains("5 条"));
     }
 
@@ -456,7 +456,7 @@ public class AuthViewModelTests
 
         Assert.Contains("并行登录 2/5 站", vm.BatchProgress);
         Assert.Contains("已抓 1 · 已跳 1", vm.BatchProgress);
-        Assert.Contains("无需点按钮", vm.BatchProgress);
+        Assert.Contains("无操作会自动抓取", vm.BatchProgress);
         Assert.True(vm.BatchPercent > 0);
     }
 
@@ -556,7 +556,7 @@ public class AuthViewModelTests
 
         router.RouteRawLine("""{"type":"ack","cmd":"auth.save","urls":["http://a.com"],"count":4}""");
 
-        Assert.Contains(vm.LogSnapshot(), l => l.Contains("auth.save"));
+        Assert.Contains(vm.LogSnapshot(), l => l.Contains("已保存"));
     }
 
     // -------------------------------------------------- 线协议解析 (BackendEventParser) --

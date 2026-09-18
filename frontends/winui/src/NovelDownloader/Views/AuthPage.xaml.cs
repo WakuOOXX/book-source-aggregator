@@ -33,7 +33,6 @@ public sealed partial class AuthPage : Page
         DataContext = ViewModel;
         InitializeComponent();
 
-        ViewModel.LogBuffer.CollectionChanged += OnLogChanged;
         ViewModel.FilterChanging += OnFilterChanging;
         ViewModel.FilterChanged += OnFilterChanged;
         ViewModel.ListRefreshed += OnListRefreshed;
@@ -335,16 +334,6 @@ public sealed partial class AuthPage : Page
         if (info.Phase == "captured" && info.Cookie.Length > 0)
         {
             ViewModel.AppendLog($"⌨ 已抓取 {info.Host} 的 Cookie → 点「保存到所选」写入。");
-        }
-    }
-
-    // ------------------------------------------------------------ 日志 --
-
-    private void OnLogChanged(object? sender, NotifyCollectionChangedEventArgs e)
-    {
-        if (e.Action == NotifyCollectionChangedAction.Add && ViewModel.LogBuffer.Count > 0)
-        {
-            AuthLogList.ScrollIntoView(ViewModel.LogBuffer[^1]);
         }
     }
 

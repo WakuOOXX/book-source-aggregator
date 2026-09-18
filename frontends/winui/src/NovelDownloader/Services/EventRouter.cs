@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Text.Json;
 using Microsoft.UI.Dispatching;
 using NovelDownloader.Models;
 using NovelDownloader.Services.Backend;
@@ -42,6 +43,8 @@ public sealed class EventRouter : IDisposable
     private MainViewModel? _vm;
     private SourcesViewModel? _sourcesVm;
     private AuthViewModel? _authVm;
+    private LogSettingsViewModel? _settingsVm;
+    private DownloadsViewModel? _downloadsVm;
     private bool _disposed;
 
     public EventRouter(BackendClient client, DispatcherQueue? dispatcher)
@@ -131,6 +134,24 @@ public sealed class EventRouter : IDisposable
         }
     }
 
+    /// <summary>把设置页 VM 接上 data.* / cache.clear / data.clear ack 链路。</summary>
+    public void Attach(LogSettingsViewModel vm)
+    {
+        lock (_sync)
+        {
+            _settingsVm = vm;
+        }
+    }
+
+    /// <summary>把下载页 VM 接上 downloads.* ack 链路。</summary>
+    public void Attach(DownloadsViewModel vm)
+    {
+        lock (_sync)
+        {
+            _downloadsVm = vm;
+        }
+    }
+
     /// <summary>
     /// 测试/复用入口: 直接投喂一行后端输出 (无需真实进程)。
     /// dispatcher 为 null 且节流器批量关闭时同步执行, 便于脱离 UI 线程做状态机单测。
@@ -181,6 +202,18 @@ public sealed class EventRouter : IDisposable
                 {
                     AuthVm()?.OnAuthError(errCmd, msg);
                 }
+
+                // data.*/清理命令错误: 设置页解锁 (迁移失败/清理失败都要恢复按钮)。
+                if (IsSettingsCmd(errCmd))
+                {
+                    SettingsVm()?.OnBackendError(errCmd, msg);
+                }
+
+                // downloads.* 错误: 下载页解锁。
+                if (errCmd.StartsWith("downloads.", StringComparison.Ordinal))
+                {
+                    DownloadsVm()?.OnBackendError(errCmd, msg);
+                }
             }));
             return;
         }
@@ -204,6 +237,18 @@ public sealed class EventRouter : IDisposable
                 if (busyCmd == "auth.fetch")
                 {
                     AuthVm()?.OnAuthRejected(msg);
+                }
+
+                // 被拒的若是设置页命令族 (重操作在跑), 同样要解锁。
+                if (IsSettingsCmd(busyCmd))
+                {
+                    SettingsVm()?.OnBackendError(busyCmd, msg);
+                }
+
+                // 被拒的若是 downloads.*, 下载页解锁。
+                if (busyCmd.StartsWith("downloads.", StringComparison.Ordinal))
+                {
+                    DownloadsVm()?.OnBackendError(busyCmd, msg);
                 }
             }));
             return;
@@ -232,13 +277,14 @@ public sealed class EventRouter : IDisposable
         }
     }
 
-    /// <summary>ack → 操作。sources.list / auth.* 携带数据, 解析后投递对应 VM; 其余只在日志可见。</summary>
+    /// <summary>ack → 操作。携带数据的 ack 解析后投递对应 VM; 纯回执不再刷日志。</summary>
     private ThrottleOp BuildAckOp(BackendEnvelope env)
     {
         if (env.Cmd == "sources.list")
         {
             // 解析在后台线程做 (纯函数, JSON 读取不碰 UI)。
             var result = BackendEventParser.ParseSourcesListAck(env);
+            var groups = env.Groups;
             return new ActionOp(() =>
             {
                 var svm = SourcesVm();
@@ -251,7 +297,10 @@ public sealed class EventRouter : IDisposable
                     svm?.FinishListLoad();
                 }
 
-                Vm()?.AppendLog("· ack sources.list");
+                if (groups is { Count: > 0 })
+                {
+                    Vm()?.ApplyGroups(groups);
+                }
             });
         }
 
@@ -269,18 +318,12 @@ public sealed class EventRouter : IDisposable
                 {
                     avm?.FinishListLoad();
                 }
-
-                Vm()?.AppendLog("· ack auth.list");
             });
         }
 
         if (env.Cmd == "auth.save")
         {
-            return new ActionOp(() =>
-            {
-                AuthVm()?.OnAuthSavedAck(env.Count);
-                Vm()?.AppendLog("· ack auth.save");
-            });
+            return new ActionOp(() => AuthVm()?.OnAuthSavedAck(env.Count));
         }
 
         if (env.Cmd == "auth.fetch")
@@ -292,14 +335,81 @@ public sealed class EventRouter : IDisposable
                 {
                     AuthVm()?.ApplyFetchAck(info);
                 }
-
-                Vm()?.AppendLog($"· ack auth.fetch{(env.Phase is null ? "" : " (" + env.Phase + ")")}");
             });
         }
 
-        var cmd = env.Cmd ?? "";
-        return new ActionOp(() => Vm()?.AppendLog($"· ack {cmd}"));
+        if (env.Cmd is "data.getdir" or "config.get")
+        {
+            var paths = BackendEventParser.ParseDataGetDirAck(env);
+            return new ActionOp(() =>
+            {
+                if (paths is not null)
+                {
+                    SettingsVm()?.ApplyPaths(paths);
+                    Vm()?.ApplyPaths(paths);
+                }
+            });
+        }
+
+        if (env.Cmd == "data.setdir")
+        {
+            var result = BackendEventParser.ParseDataSetDirAck(env);
+            return new ActionOp(() =>
+            {
+                if (result is not null)
+                {
+                    SettingsVm()?.OnSetDirAck(result);
+                    Vm()?.ApplyPaths(result.Paths);
+                }
+            });
+        }
+
+        if (env.Cmd is "cache.clear" or "data.clear")
+        {
+            var clearCmd = env.Cmd;
+            var result = BackendEventParser.ParseClearAck(env, clearCmd);
+            return new ActionOp(() =>
+            {
+                if (result is not null)
+                {
+                    SettingsVm()?.OnClearAck(clearCmd, result);
+                }
+            });
+        }
+
+        if (env.Cmd == "downloads.list")
+        {
+            var result = BackendEventParser.ParseDownloadsListAck(env);
+            return new ActionOp(() =>
+            {
+                var dvm = DownloadsVm();
+                if (result is not null)
+                {
+                    dvm?.ApplyList(result);
+                }
+                else
+                {
+                    dvm?.FinishList();
+                }
+            });
+        }
+
+        if (env.Cmd == "downloads.delete")
+        {
+            var path = ExtraString(env, "path");
+            return new ActionOp(() =>
+            {
+                if (path is not null)
+                {
+                    DownloadsVm()?.OnDeleteAck(path);
+                }
+            });
+        }
+
+        return NullOp;
     }
+
+    private static readonly ThrottleOp NullOp = new ActionOp(() => { });
 
     private void OnStderrLine(string line)
     {
@@ -332,6 +442,8 @@ public sealed class EventRouter : IDisposable
             SourcesVm()?.AbortVerify("后端进程已退出");
             // 登录头页: 抓取浏览器也没了, 复位抓取/批量态。
             AuthVm()?.AbortAll("后端进程已退出");
+            // 下载页: 刷新/删除在途也会被掐, 解锁。
+            DownloadsVm()?.AbortAll("后端进程已退出");
         }));
     }
 
@@ -499,6 +611,40 @@ public sealed class EventRouter : IDisposable
             return _authVm;
         }
     }
+
+    private LogSettingsViewModel? SettingsVm()
+    {
+        lock (_sync)
+        {
+            return _settingsVm;
+        }
+    }
+
+    private DownloadsViewModel? DownloadsVm()
+    {
+        lock (_sync)
+        {
+            return _downloadsVm;
+        }
+    }
+
+    /// <summary>ack 顶层扩展字段 (JsonExtensionData) 里的字符串; 缺失/非字符串返回 null。</summary>
+    private static string? ExtraString(BackendEnvelope env, string key)
+    {
+        if (env.Extra is not null
+            && env.Extra.TryGetValue(key, out var el)
+            && el.ValueKind == JsonValueKind.String)
+        {
+            return el.GetString();
+        }
+
+        return null;
+    }
+
+    /// <summary>设置页命令族: data.* / cache.clear / data.clear (错误与忙拒都要解锁)。</summary>
+    private static bool IsSettingsCmd(string cmd)
+        => cmd.StartsWith("data.", StringComparison.Ordinal)
+           || cmd is "cache.clear" or "data.clear";
 
     public void Dispose()
     {

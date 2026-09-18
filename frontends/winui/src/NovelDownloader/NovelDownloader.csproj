@@ -7,6 +7,8 @@
     <TargetPlatformMinVersion>10.0.17763.0</TargetPlatformMinVersion>
     <RootNamespace>NovelDownloader</RootNamespace>
     <AssemblyName>NovelDownloader</AssemblyName>
+    <!-- 程序集名保持 NovelDownloader (老用户 settings.json 路径不孤儿化); 显示名/安装包 exe 用中文产品名。 -->
+    <Product>书源聚合下载器</Product>
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <Platforms>x64</Platforms>
     <RuntimeIdentifier>win-x64</RuntimeIdentifier>
@@ -14,6 +16,11 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <LangVersion>latest</LangVersion>
+
+    <!-- 版本号与 server.py 的 VERSION 同步 (需求 12): 改版本必须两处一起改。 -->
+    <Version>1.31.0</Version>
+    <AssemblyVersion>1.31.0.0</AssemblyVersion>
+    <FileVersion>1.31.0.0</FileVersion>
 
     <!-- 非打包 / 自包含 Windows App SDK 运行时 -->
     <WindowsPackageType>None</WindowsPackageType>

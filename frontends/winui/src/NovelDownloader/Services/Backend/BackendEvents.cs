@@ -164,12 +164,15 @@ public sealed record BackendHello(
     int Files,
     int Checked,
     int Auth,
-    string SourceDir)
+    string SourceDir,
+    string DataDir = "",
+    string DefaultOut = "",
+    IReadOnlyList<string>? Groups = null)
 {
     /// <summary>一行可读的后端状态摘要 (日志/状态栏用)。</summary>
     public string Summary =>
-        $"后端已连接 · server v{Version} · JS 引擎{(Js ? "✓" : "✗")} · " +
-        $"工作源 {Sources} · 书源文件 {Files} (清单 {Checked}) · 登录头 {Auth}";
+        $"已连接后端 v{Version} · JS 引擎{(Js ? "可用" : "不可用")} · " +
+        $"工作源 {Sources} 个 · 书源文件 {Files} 个（勾选 {Checked}）· 登录头 {Auth} 条";
 }
 
 /// <summary>
@@ -197,6 +200,13 @@ public sealed class BackendEnvelope
     [JsonPropertyName("auth")] public int Auth { get; init; }
     [JsonPropertyName("source_dir")] public string? SourceDir { get; init; }
 
+    // 数据布局字段 (hello / config.get / data.getdir / data.setdir ack; 其余消息缺省, 无害)。
+    [JsonPropertyName("data_dir")] public string? DataDir { get; init; }
+    [JsonPropertyName("default_out")] public string? DefaultOut { get; init; }
+
+    // hello / sources.list 的分组名列表 (server collect_groups)。
+    [JsonPropertyName("groups")] public List<string>? Groups { get; init; }
+
     // auth 命令族 ack 专属字段 (auth.list / auth.save / auth.fetch; 其余消息缺省, 无害)。
     [JsonPropertyName("count")] public int Count { get; init; }
     [JsonPropertyName("entries")] public JsonElement Entries { get; init; }
@@ -217,7 +227,8 @@ public sealed class BackendEnvelope
 
     /// <summary>hello → 强类型 BackendHello。</summary>
     public BackendHello ToHello() => new(
-        Version ?? "", Js, Sources, FilesCount, CheckedCount, Auth, SourceDir ?? "");
+        Version ?? "", Js, Sources, FilesCount, CheckedCount, Auth,
+        SourceDir ?? "", DataDir ?? "", DefaultOut ?? "", Groups);
 }
 
 // ---------------------------------- sources.list ack 数据 ----------------------------------
@@ -271,6 +282,68 @@ public sealed class AuthListResult
 /// </summary>
 public sealed record AuthFetchAckInfo(
     string Phase, string Url, string Host, string GrabHost, string Cookie);
+
+// ---------------------------------- data / 清理 / downloads ack 数据 ----------------------------------
+
+/// <summary>
+/// 后端数据布局 (server._paths_info): hello / config.get / data.getdir / data.setdir ack 共用。
+/// </summary>
+public sealed class DataDirPaths
+{
+    public string DataDir { get; init; } = "";
+    public string SourceDir { get; init; } = "";
+    public string DefaultSource { get; init; } = "";
+    public string DefaultOut { get; init; } = "";
+    public string StateFile { get; init; } = "";
+    public string AuthProfileDir { get; init; } = "";
+}
+
+/// <summary>
+/// data.setdir 的 ack (server._cmd_data_setdir): 迁移结果 + 新布局。
+/// unchanged=true 表示目标与当前目录相同 (未搬任何文件)。
+/// </summary>
+public sealed class DataSetDirResult
+{
+    public bool Unchanged { get; init; }
+    public bool Migrate { get; init; } = true;
+    public IReadOnlyList<string> Moved { get; init; } = Array.Empty<string>();
+    public IReadOnlyList<string> KeptOld { get; init; } = Array.Empty<string>();
+    public DataDirPaths Paths { get; init; } = new();
+}
+
+/// <summary>
+/// cache.clear / data.clear 的 ack: 删除清单 + 失败清单 (+ 缓存释放字节数)。
+/// </summary>
+public sealed class ClearResult
+{
+    public IReadOnlyList<string> Deleted { get; init; } = Array.Empty<string>();
+    public IReadOnlyList<string> Failed { get; init; } = Array.Empty<string>();
+    public long FreedBytes { get; init; }
+    public string Note { get; init; } = "";
+}
+
+/// <summary>downloads.list 的 items 单项 (server._cmd_downloads_list)。</summary>
+public sealed record DownloadItemDto(
+    [property: JsonPropertyName("name")] string Name,
+    [property: JsonPropertyName("file")] string File,
+    [property: JsonPropertyName("path")] string Path,
+    [property: JsonPropertyName("ext")] string Ext,
+    [property: JsonPropertyName("size")] long Size,
+    [property: JsonPropertyName("mtime")] double Mtime)
+{
+    /// <summary>Unix 秒 → 本地时间 (无效值回 DateTime.MinValue)。</summary>
+    public DateTimeOffset Modified
+        => Mtime > 0
+            ? DateTimeOffset.FromUnixTimeSeconds((long)Mtime).ToLocalTime()
+            : DateTimeOffset.MinValue;
+}
+
+/// <summary>downloads.list 的完整应答 (下载目录 + 按下载时间倒序的文件清单)。</summary>
+public sealed class DownloadsListResult
+{
+    public string Dir { get; init; } = "";
+    public IReadOnlyList<DownloadItemDto> Items { get; init; } = Array.Empty<DownloadItemDto>();
+}
 
 /// <summary>
 /// JSONL 行 → 强类型 BackendEvent 的解析器。
@@ -507,6 +580,160 @@ public static class BackendEventParser
            && obj.TryGetProperty(prop, out var v)
             ? v
             : default;
+
+    // -------- ack 数据读取 (data.* / cache.clear / data.clear / downloads.*) --------
+
+    /// <summary>
+    /// data.getdir / config.get 的 ack 信封 → 当前数据布局 (paths 落在 Extra)。
+    /// 非该类 ack 或 data_dir 缺失返回 null (不抛)。
+    /// </summary>
+    public static DataDirPaths? ParseDataGetDirAck(BackendEnvelope env)
+    {
+        if (env.Type != "ack" || (env.Cmd != "data.getdir" && env.Cmd != "config.get"))
+        {
+            return null;
+        }
+
+        var paths = ReadPaths(env);
+        return string.IsNullOrEmpty(paths.DataDir) ? null : paths;
+    }
+
+    /// <summary>data.setdir 的 ack 信封 → DataSetDirResult (moved/kept_old/unchanged + 新布局)。</summary>
+    public static DataSetDirResult? ParseDataSetDirAck(BackendEnvelope env)
+    {
+        if (env.Type != "ack" || env.Cmd != "data.setdir")
+        {
+            return null;
+        }
+
+        try
+        {
+            return new DataSetDirResult
+            {
+                Unchanged = ExtraBool(env, "unchanged"),
+                Migrate = ExtraBool(env, "migrate", fallback: true),
+                Moved = ExtraStringList(env, "moved"),
+                KeptOld = ExtraStringList(env, "kept_old"),
+                Paths = ReadPaths(env),
+            };
+        }
+        catch (Exception)
+        {
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// cache.clear / data.clear 的 ack 信封 → ClearResult。
+    /// cmd 不匹配或形状不符返回 null (不抛)。
+    /// </summary>
+    public static ClearResult? ParseClearAck(BackendEnvelope env, string cmd)
+    {
+        if (env.Type != "ack" || env.Cmd != cmd)
+        {
+            return null;
+        }
+
+        try
+        {
+            long freed = 0;
+            if (TryExtra(env, "freed_bytes", out var fEl) && fEl.ValueKind == JsonValueKind.Number)
+            {
+                freed = fEl.GetInt64();
+            }
+
+            return new ClearResult
+            {
+                Deleted = ExtraStringList(env, "deleted"),
+                Failed = ExtraStringList(env, "failed"),
+                FreedBytes = freed,
+                Note = ExtraString(env, "note"),
+            };
+        }
+        catch (Exception)
+        {
+            return null;
+        }
+    }
+
+    /// <summary>downloads.list 的 ack 信封 → DownloadsListResult (dir + items 行)。</summary>
+    public static DownloadsListResult? ParseDownloadsListAck(BackendEnvelope env)
+    {
+        if (env.Type != "ack" || env.Cmd != "downloads.list")
+        {
+            return null;
+        }
+
+        try
+        {
+            var items = new List<DownloadItemDto>();
+            if (TryExtra(env, "items", out var el) && el.ValueKind == JsonValueKind.Array)
+            {
+                foreach (var row in el.EnumerateArray())
+                {
+                    if (row.ValueKind == JsonValueKind.Object)
+                    {
+                        items.Add(row.Deserialize<DownloadItemDto>(Opts)
+                                  ?? throw new JsonException("items 行反序列化失败"));
+                    }
+                }
+            }
+
+            return new DownloadsListResult { Dir = ExtraString(env, "dir"), Items = items };
+        }
+        catch (Exception)
+        {
+            return null;
+        }
+    }
+
+    private static DataDirPaths ReadPaths(BackendEnvelope env) => new()
+    {
+        DataDir = env.DataDir ?? "",
+        SourceDir = env.SourceDir ?? "",
+        DefaultSource = ExtraString(env, "default_source"),
+        DefaultOut = env.DefaultOut ?? "",
+        StateFile = ExtraString(env, "state_file"),
+        AuthProfileDir = ExtraString(env, "auth_profile_dir"),
+    };
+
+    private static bool TryExtra(BackendEnvelope env, string key, out JsonElement el)
+    {
+        if (env.Extra is not null)
+        {
+            return env.Extra.TryGetValue(key, out el);
+        }
+
+        el = default;
+        return false;
+    }
+
+    private static string ExtraString(BackendEnvelope env, string key)
+        => TryExtra(env, key, out var el) && el.ValueKind == JsonValueKind.String
+            ? (el.GetString() ?? "")
+            : "";
+
+    private static bool ExtraBool(BackendEnvelope env, string key, bool fallback = false)
+        => TryExtra(env, key, out var el)
+            ? el.ValueKind == JsonValueKind.True
+            : fallback;
+
+    private static IReadOnlyList<string> ExtraStringList(BackendEnvelope env, string key)
+    {
+        var list = new List<string>();
+        if (TryExtra(env, key, out var el) && el.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var s in el.EnumerateArray())
+            {
+                if (s.ValueKind == JsonValueKind.String)
+                {
+                    list.Add(s.GetString() ?? "");
+                }
+            }
+        }
+
+        return list;
+    }
 
     // -------- 数组元素读取助手 (payload 是元组 → JSON 数组) --------
 

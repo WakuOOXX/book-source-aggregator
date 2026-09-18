@@ -53,10 +53,10 @@ public sealed class AuthViewModel : ObservableObject
     private bool _listLoaded;
 
     // ---- 详情编辑 / 单站抓取 ----
-    private string _detailTitle = "未选中 · 在上方点选书源(可多选)";
+    private string _detailTitle = "未选中 · 在左侧列表点选站点（可多选）";
     private string _editCookie = "";
     private string _editHeaderJson = "";
-    private string _fetchStatus = "就绪: 选中单个源后可「浏览器登录抓取」";
+    private string _fetchStatus = "就绪: 选中单个站点后可「浏览器登录抓取」";
     private string _fetchButtonText = "浏览器登录抓取";
     private string _fetchPhase = "idle";      // idle / launching / launched / capturing
     private string _grabHost = "";
@@ -122,7 +122,7 @@ public sealed class AuthViewModel : ObservableObject
     }
 
     /// <summary>列表标题计数。</summary>
-    public string SourceCountText => $"已配源 ({Sources.Count})";
+    public string SourceCountText => $"已配置站点 ({Sources.Count})";
 
     /// <summary>过滤计数文字。</summary>
     public string FilteredCountText => $"已配 {Sources.Count} · 显示 {FilteredSources.Count}";
@@ -265,7 +265,7 @@ public sealed class AuthViewModel : ObservableObject
         _selectedUrls.Clear();
         _selectedUrls.AddRange(keep.Where(u => Sources.Any(s => s.Url == u)));
         OnSelectionCountChanged();
-        AppendLog($"· auth.list: {Sources.Count} 个已配置源");
+        AppendLog($"· 登录头清单: {Sources.Count} 个已配置站点");
         ListRefreshed?.Invoke();
     }
 
@@ -273,7 +273,7 @@ public sealed class AuthViewModel : ObservableObject
     public void FinishListLoad()
     {
         ListLoaded = true;
-        AppendLog("· auth.list 应答无数据, 保持现有列表。");
+        AppendLog("· 登录头清单读取失败, 保持现有列表。");
     }
 
     /// <summary>DTO → 行模型 (header dict 序列化为可编辑 JSON 文本)。</summary>
@@ -366,7 +366,7 @@ public sealed class AuthViewModel : ObservableObject
         }
         else
         {
-            DetailTitle = "未选中 · 在上方点选书源(可多选)";
+            DetailTitle = "未选中 · 在左侧列表点选站点（可多选）";
             EditCookie = "";
             EditHeaderJson = "";
         }
@@ -411,7 +411,7 @@ public sealed class AuthViewModel : ObservableObject
     /// <summary>auth.save ack 落账 (count 为后端现有配置总数)。</summary>
     public void OnAuthSavedAck(int count)
     {
-        AppendLog($"✔ auth.save 已受理: 所选 {_selectedUrls.Count} 个源 · 现有配置共 {count} 条。");
+        AppendLog($"✔ 已保存: 应用到所选 {_selectedUrls.Count} 个站点 · 现有配置共 {count} 条。");
     }
 
     /// <summary>保存/删除命令发出后就地更新列表行 (● 状态点与已存值), 不必等重拉。</summary>
@@ -440,7 +440,7 @@ public sealed class AuthViewModel : ObservableObject
     {
         if (_selectedUrls.Count != 1)
         {
-            AppendLog($"✘ 浏览器登录抓取需选中单个源 (当前选中 {_selectedUrls.Count} 个)。");
+            AppendLog($"✘ 浏览器登录抓取需选中单个站点（当前选中 {_selectedUrls.Count} 个）。");
             return null;
         }
 
@@ -681,7 +681,7 @@ public sealed class AuthViewModel : ObservableObject
         if (_batchIndex >= _hosts.Count)
         {
             FinishBatch(_batchAuto
-                ? $"全自动完成: 处理 {_paraTotal} 站 · 抓到并保存 {_paraDone} 站 (后端无三段式, 以单站两段式近似)。"
+                ? $"全自动完成: 处理 {_paraTotal} 站 · 抓到并保存 {_paraDone} 站。"
                 : $"批量抓取结束: 共处理 {_hosts.Count} 个站点, Cookie 已全部注入。");
             return null;
         }
@@ -856,7 +856,7 @@ public sealed class AuthViewModel : ObservableObject
         _curIdle = idle;
         ParaTabs = k;
         BatchPercent = total > 0 ? (double)done / total * 100 : 0;
-        BatchProgress = $"并行登录 {done}/{total} 站({k} 标签): 已抓 {got} · 已跳 {skip} | {curHost} —— 在浏览器里登录该站即可, 无需点按钮 —— {idle}s 无操作自动抓取跳下一站(点击/输入会重置倒计时)。";
+        BatchProgress = $"并行登录 {done}/{total} 站（{k} 个标签）: 已抓 {got} · 已跳 {skip}｜{curHost} —— 在浏览器里登录该站即可，{idle}s 无操作会自动抓取并跳到下一站。";
     }
 
     private void OnBatchStateChanged()

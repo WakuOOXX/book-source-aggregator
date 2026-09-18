@@ -72,7 +72,7 @@ public sealed class BackendClient : IAsyncDisposable, IDisposable
 
     /// <summary>
     /// 启动后端进程并挂上读写循环。
-    /// 优先级: exe 同目录的 bookdl-backend.exe (M5 打包预留) &gt; python &gt; py -3。
+    /// 优先级: exe 同目录的 bookdl-backend.exe (安装包形态) &gt; python &gt; py -3。
     /// 返回是否启动成功。启动后由调用方发 init (App 里发, 便于"启动即握手"流程可见)。
     /// </summary>
     public async Task<bool> StartAsync(CancellationToken ct = default)
@@ -89,7 +89,7 @@ public sealed class BackendClient : IAsyncDisposable, IDisposable
         string exe, args, workDir;
         if (File.Exists(bundled))
         {
-            // M5 打包形态: PyInstaller 冻出的 bookdl-backend.exe, 就在 exe 同目录。
+            // 安装包形态: 冻结出的 bookdl-backend.exe, 就在 exe 同目录。
             exe = bundled;
             args = "";
             workDir = root ?? baseDir;
@@ -129,6 +129,13 @@ public sealed class BackendClient : IAsyncDisposable, IDisposable
         psi.Environment["PYTHONIOENCODING"] = "utf-8";
         psi.Environment["PYTHONUTF8"] = "1";
         psi.Environment["PYTHONUNBUFFERED"] = "1";
+
+        // 用户自定义数据存储目录 (设置页可改): 后端 core.config 以此环境变量为最高优先。
+        var dataDir = App.Settings?.DataDir;
+        if (!string.IsNullOrWhiteSpace(dataDir))
+        {
+            psi.Environment["BOOKDL_DATA_DIR"] = dataDir;
+        }
 
         Process p;
         try
@@ -201,10 +208,11 @@ public sealed class BackendClient : IAsyncDisposable, IDisposable
     public Task InitAsync(CancellationToken ct = default)
         => SendAsync(Json(new Dictionary<string, object?> { ["cmd"] = "init" }), ct);
 
-    /// <summary>search: 并发搜索。domain = 自动|书名|作者|分类。</summary>
+    /// <summary>search: 并发搜索。domain = 自动|书名|作者|分类; group = 「全部」或书源分组名。</summary>
     public Task SearchAsync(
         string keyword, bool fuzzy = true, bool rel = true,
-        string domain = "自动", bool deepOnly = false, CancellationToken ct = default)
+        string domain = "自动", bool deepOnly = false, string group = "全部",
+        CancellationToken ct = default)
         => SendAsync(Json(new Dictionary<string, object?>
         {
             ["cmd"] = "search",
@@ -213,6 +221,7 @@ public sealed class BackendClient : IAsyncDisposable, IDisposable
             ["rel"] = rel,
             ["domain"] = domain,
             ["deep_only"] = deepOnly,
+            ["group"] = group,
         }), ct);
 
     /// <summary>stop: 等价旧 stop_all, 后端置当前重操作的 threading.Event。</summary>
@@ -257,6 +266,52 @@ public sealed class BackendClient : IAsyncDisposable, IDisposable
         {
             ["cmd"] = "sources.remove",
             ["file"] = file,
+        }), ct);
+
+    // ------------------------------------------------ data / 清理 命令族 ----
+
+    /// <summary>data.getdir: 查询当前数据目录布局 (ack 携带 data_dir/source_dir/… 经 EventRouter 投递)。</summary>
+    public Task DataGetDirAsync(CancellationToken ct = default)
+        => SendAsync(Json(new Dictionary<string, object?> { ["cmd"] = "data.getdir" }), ct);
+
+    /// <summary>data.setdir: 切换数据存储目录; migrate=true 时后端把已有数据整体搬过去并清理旧目录。</summary>
+    public Task DataSetDirAsync(string path, bool migrate = true, CancellationToken ct = default)
+        => SendAsync(Json(new Dictionary<string, object?>
+        {
+            ["cmd"] = "data.setdir",
+            ["path"] = path,
+            ["migrate"] = migrate,
+        }), ct);
+
+    /// <summary>cache.clear: 只清可再生的校验产物与校验记忆 (登录头/书源/下载保留)。</summary>
+    public Task CacheClearAsync(CancellationToken ct = default)
+        => SendAsync(Json(new Dictionary<string, object?> { ["cmd"] = "cache.clear" }), ct);
+
+    /// <summary>data.clear: 清登录头 + 全部书源文件 + 运行记忆, 内置书源自动恢复 (下载目录不动)。</summary>
+    public Task DataClearAsync(CancellationToken ct = default)
+        => SendAsync(Json(new Dictionary<string, object?> { ["cmd"] = "data.clear" }), ct);
+
+    // ------------------------------------------------ downloads 命令族 ----
+
+    /// <summary>downloads.list: 扫描下载目录里的 txt/epub (ack 携带 dir/items 经 EventRouter → DownloadsViewModel)。</summary>
+    public Task DownloadsListAsync(CancellationToken ct = default)
+        => SendAsync(Json(new Dictionary<string, object?> { ["cmd"] = "downloads.list" }), ct);
+
+    /// <summary>downloads.open: 打开文件本体; reveal=true 时打开所在目录并选中。</summary>
+    public Task DownloadsOpenAsync(string path, bool reveal = false, CancellationToken ct = default)
+        => SendAsync(Json(new Dictionary<string, object?>
+        {
+            ["cmd"] = "downloads.open",
+            ["path"] = path,
+            ["reveal"] = reveal,
+        }), ct);
+
+    /// <summary>downloads.delete: 删除一本已下载的书 (后端有下载目录包含性校验)。</summary>
+    public Task DownloadsDeleteAsync(string path, CancellationToken ct = default)
+        => SendAsync(Json(new Dictionary<string, object?>
+        {
+            ["cmd"] = "downloads.delete",
+            ["path"] = path,
         }), ct);
 
     // ------------------------------------------------- auth 命令族 (M4) ----
@@ -318,7 +373,7 @@ public sealed class BackendClient : IAsyncDisposable, IDisposable
 
     /// <summary>
     /// download: 下载选中书目。hits 为 HitItem 列表 (转为 DTO 传给后端)。
-    /// mode = "单一" | "合并", fmt = "TXT" | "EPUB", outDir 为输出目录。
+    /// mode = "万里挑一" | "全部下载", fmt = "自动" | "TXT" | "EPUB", outDir 为输出目录。
     /// </summary>
     public Task DownloadAsync(
         IReadOnlyList<Models.HitItem> hits, string mode, string fmt, string outDir,
@@ -334,8 +389,8 @@ public sealed class BackendClient : IAsyncDisposable, IDisposable
             ["source"] = new Dictionary<string, string> { ["bookSourceName"] = h.SourceName },
         }).ToList();
 
-        // 线协议: server._cmd_download 认 "single"/"merge" (内部再 merge→batch), fmt 认 "txt"/"epub"。
-        // UI 侧是中文 "单一"/"合并" 与大写 "TXT"/"EPUB", 这里统一映射, 兼容直接传英文的情况。
+        // 线协议: server._cmd_download 认 "single"/"merge" (内部再 merge→batch),
+        // fmt 认 "txt"/"epub"/"auto"。UI 侧是中文文案, 这里统一映射, 兼容旧记忆值。
         return SendAsync(Json(new Dictionary<string, object?>
         {
             ["cmd"] = "download",
@@ -346,18 +401,31 @@ public sealed class BackendClient : IAsyncDisposable, IDisposable
         }), ct);
     }
 
-    /// <summary>UI 下载模式 → server 线协议: 合并/merge → "merge", 其余 → "single"。</summary>
-    private static string MapMode(string? mode)
+    /// <summary>UI 下载模式 → server 线协议: 全部下载/合并/merge → "merge", 其余 (含旧值"单一") → "single"。</summary>
+    public static string MapMode(string? mode)
         => mode is not null &&
-           (mode.Equals("合并", StringComparison.Ordinal) || mode.Equals("merge", StringComparison.OrdinalIgnoreCase))
+           (mode.Equals("全部下载", StringComparison.Ordinal) ||
+            mode.Equals("合并", StringComparison.Ordinal) ||
+            mode.Equals("merge", StringComparison.OrdinalIgnoreCase))
             ? "merge"
             : "single";
 
-    /// <summary>UI 导出格式 → server 线协议: 含 "epub" (不区分大小写) → "epub", 其余 → "txt"。</summary>
-    private static string MapFormat(string? fmt)
-        => fmt is not null && fmt.Contains("epub", StringComparison.OrdinalIgnoreCase)
-            ? "epub"
-            : "txt";
+    /// <summary>UI 导出格式 → server 线协议: 自动/auto → "auto", 含 "epub" → "epub", 其余 → "txt"。</summary>
+    public static string MapFormat(string? fmt)
+    {
+        if (fmt is null)
+        {
+            return "auto";
+        }
+
+        if (fmt.Equals("自动", StringComparison.Ordinal) ||
+            fmt.Equals("auto", StringComparison.OrdinalIgnoreCase))
+        {
+            return "auto";
+        }
+
+        return fmt.Contains("epub", StringComparison.OrdinalIgnoreCase) ? "epub" : "txt";
+    }
 
     // -------------------------------------------------------------- 读行循环 --
 

@@ -168,4 +168,87 @@ public class BackendEventParserTests
         Assert.Null(ev);
         Assert.NotNull(error);
     }
+
+    // ------------------------------------------- data.* / 清理 / downloads ack -------------------------------------------
+
+    [Fact]
+    public void Hello_CarriesDataDirAndDefaultOut()
+    {
+        const string line =
+            """{"type":"hello","cmd":"init","version":"1.31","js":true,"sources":12,"files":3,"checked":2,"auth":1,"source_dir":"D:\\d\\shuyuan","data_dir":"D:\\d","default_source":"D:\\d\\shuyuan\\bookSource.json","default_out":"D:\\d\\downloads","state_file":"D:\\d\\sel_state.json","auth_profile_dir":"D:\\d\\auth_profile"}""";
+
+        var env = BackendEventParser.ParseEnvelope(line, out var error);
+        Assert.Null(error);
+        var hello = env!.ToHello();
+
+        Assert.Equal(@"D:\d", hello.DataDir);
+        Assert.Equal(@"D:\d\downloads", hello.DefaultOut);
+    }
+
+    [Fact]
+    public void ParseDataGetDirAck_ReadsPaths()
+    {
+        const string line =
+            """{"type":"ack","cmd":"data.getdir","data_dir":"D:\\d","source_dir":"D:\\d\\shuyuan","default_source":"D:\\d\\shuyuan\\bookSource.json","default_out":"D:\\d\\downloads","state_file":"D:\\d\\sel_state.json","auth_profile_dir":"D:\\d\\auth_profile"}""";
+
+        var paths = BackendEventParser.ParseDataGetDirAck(BackendEventParser.ParseEnvelope(line, out _)!);
+
+        Assert.NotNull(paths);
+        Assert.Equal(@"D:\d", paths!.DataDir);
+        Assert.Equal(@"D:\d\downloads", paths.DefaultOut);
+        Assert.Equal(@"D:\d\auth_profile", paths.AuthProfileDir);
+    }
+
+    [Fact]
+    public void ParseDataSetDirAck_ReadsMovedKeptOldAndPaths()
+    {
+        const string line =
+            """{"type":"ack","cmd":"data.setdir","moved":["shuyuan","downloads"],"kept_old":["auth_profile"],"migrate":true,"unchanged":false,"data_dir":"E:\\new","source_dir":"E:\\new\\shuyuan","default_source":"","default_out":"E:\\new\\downloads","state_file":"","auth_profile_dir":""}""";
+
+        var r = BackendEventParser.ParseDataSetDirAck(BackendEventParser.ParseEnvelope(line, out _)!);
+
+        Assert.NotNull(r);
+        Assert.False(r!.Unchanged);
+        Assert.True(r.Migrate);
+        Assert.Equal(new[] { "shuyuan", "downloads" }, r.Moved);
+        Assert.Equal(new[] { "auth_profile" }, r.KeptOld);
+        Assert.Equal(@"E:\new", r.Paths.DataDir);
+    }
+
+    [Fact]
+    public void ParseClearAck_CacheAndData()
+    {
+        var cache = BackendEventParser.ParseClearAck(
+            BackendEventParser.ParseEnvelope(
+                """{"type":"ack","cmd":"cache.clear","deleted":["a.good.json"],"failed":[],"freed_bytes":2048,"note":"清了"}""", out _)!,
+            "cache.clear");
+        Assert.NotNull(cache);
+        Assert.Equal(2048, cache!.FreedBytes);
+        Assert.Single(cache.Deleted);
+        Assert.Empty(cache.Failed);
+        Assert.Equal("清了", cache.Note);
+
+        var data = BackendEventParser.ParseClearAck(
+            BackendEventParser.ParseEnvelope(
+                """{"type":"ack","cmd":"cache.clear","deleted":[],"failed":[],"freed_bytes":0}""", out _)!,
+            "data.clear");
+        Assert.Null(data); // cmd 不匹配不误吃
+    }
+
+    [Fact]
+    public void ParseDownloadsListAck_ReadsItems()
+    {
+        const string line =
+            """{"type":"ack","cmd":"downloads.list","dir":"D:\\d\\downloads","items":[{"name":"诡秘之主","file":"诡秘之主.epub","path":"D:\\d\\downloads\\诡秘之主.epub","ext":"epub","size":123456,"mtime":1750000000}]}""";
+
+        var r = BackendEventParser.ParseDownloadsListAck(BackendEventParser.ParseEnvelope(line, out _)!);
+
+        Assert.NotNull(r);
+        Assert.Equal(@"D:\d\downloads", r!.Dir);
+        var item = Assert.Single(r.Items);
+        Assert.Equal("诡秘之主", item.Name);
+        Assert.Equal("epub", item.Ext);
+        Assert.Equal(123456, item.Size);
+        Assert.True(item.Modified.Year >= 2025);
+    }
 }

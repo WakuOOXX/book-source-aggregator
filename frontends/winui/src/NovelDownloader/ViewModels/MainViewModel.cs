@@ -40,10 +40,11 @@ public sealed class MainViewModel : ObservableObject
     private bool _relatedOnly = true;
     private bool _deepOnly;
 
-    // 下载状态 (M2)
+    // 下载状态
     private bool _isDownloading;
-    private string _downloadMode = "单一";
-    private string _exportFormat = "TXT";
+    private string _downloadMode = "万里挑一";
+    private string _exportFormat = "自动";
+    private string _outDir = "";
     private int _downloadBookCount;
     private int _downloadBookIndex;
     private int _downloadChapterDone;
@@ -102,11 +103,32 @@ public sealed class MainViewModel : ObservableObject
         set => SetProperty(ref _domain, value);
     }
 
-    /// <summary>书源分组 (M1 只有「全部」; M3 接后端 sources.list 填充)。</summary>
+    /// <summary>书源分组候选: 「全部」+ 后端 hello/sources.list 回传的分组名。</summary>
+    public IReadOnlyList<string> SourceGroups { get; private set; } = new[] { "全部" };
+
+    /// <summary>书源分组: 全部或书源包内分组名, 服务端按 bookSourceGroup 过滤工作源。</summary>
     public string SourceGroup
     {
         get => _sourceGroup;
-        set => SetProperty(ref _sourceGroup, value);
+        set => SetProperty(ref _sourceGroup,
+                           string.IsNullOrWhiteSpace(value) ? "全部" : value);
+    }
+
+    /// <summary>hello 到达后灌分组列表; 当前选中分组失效时回退「全部」。</summary>
+    public void ApplyGroups(IReadOnlyList<string>? groups)
+    {
+        var list = new List<string> { "全部" };
+        if (groups is { Count: > 0 })
+        {
+            list.AddRange(groups);
+        }
+
+        SourceGroups = list;
+        OnPropertyChanged(nameof(SourceGroups));
+        if (!list.Contains(SourceGroup))
+        {
+            SourceGroup = "全部";
+        }
     }
 
     /// <summary>界面上实际收到的命中卡片数 (与 sres 的引擎全量口径可能不同)。</summary>
@@ -228,18 +250,25 @@ public sealed class MainViewModel : ObservableObject
         set => SetProperty(ref _downloadStatus, value);
     }
 
-    /// <summary>导出格式: TXT 或 EPUB。</summary>
+    /// <summary>导出格式: 自动 (书源能力检测, EPUB 优先降级 TXT) / EPUB / TXT。</summary>
     public string ExportFormat
     {
         get => _exportFormat;
         set => SetProperty(ref _exportFormat, value);
     }
 
-    /// <summary>下载模式: 单一 或 合并。</summary>
+    /// <summary>下载模式: 万里挑一 (换源试下, 一本成功即停) 或 全部下载 (每本选中各存一个文件)。</summary>
     public string DownloadMode
     {
         get => _downloadMode;
         set => SetProperty(ref _downloadMode, value);
+    }
+
+    /// <summary>下载输出目录 (hello ack 的 default_out 灌入; 下载命令用它)。</summary>
+    public string OutDir
+    {
+        get => _outDir;
+        private set => SetProperty(ref _outDir, value);
     }
 
     // ------------------------------------------------------------- 计算属性 --
@@ -321,12 +350,23 @@ public sealed class MainViewModel : ObservableObject
         }
     }
 
-    /// <summary>hello 到达: 记录后端版本 / 源统计。</summary>
+    /// <summary>hello 到达: 记录后端版本 / 源统计 / 下载目录 / 书源分组。</summary>
     public void ApplyHello(BackendHello hello)
     {
         SourceCount = hello.Sources;
         BackendStatus = hello.Summary;
+        OutDir = hello.DefaultOut;
+        ApplyGroups(hello.Groups);
         AppendLog("· " + hello.Summary);
+    }
+
+    /// <summary>数据目录迁移后刷新下载目录 (data.setdir ack)。</summary>
+    public void ApplyPaths(DataDirPaths paths)
+    {
+        if (!string.IsNullOrEmpty(paths.DefaultOut))
+        {
+            OutDir = paths.DefaultOut;
+        }
     }
 
     /// <summary>开始搜索: 清空上一轮结果, 进入搜索态。</summary>
@@ -337,9 +377,9 @@ public sealed class MainViewModel : ObservableObject
         EngineHitCount = 0;
         SelectedCount = 0;
         SearchProgress = $"搜索中… ({_domain})";
-        AppendLog($"▶ 搜索「{keyword}」· 域 {_domain} · 模糊 {(Fuzzy ? "开" : "关")}"
+        AppendLog($"▶ 搜索「{keyword}」· 分组 {SourceGroup} · 域 {_domain} · 模糊 {(Fuzzy ? "开" : "关")}"
                   + $" · 只看相关 {(RelatedOnly ? "开" : "关")}"
-                  + $" · 只搜通过源 {(DeepOnly ? "开" : "关")}");
+                  + $" · 只搜试搜通过源 {(DeepOnly ? "开" : "关")}");
         IsSearching = true;
     }
 
@@ -351,11 +391,11 @@ public sealed class MainViewModel : ObservableObject
         HitCount = Hits.Count;
         IsSearching = false;
 
-        var suffix = sres.Fuzzy ? "（模糊）" : "（精确）";
+        var suffix = sres.Fuzzy ? "(模糊)" : "(精确)";
         var extra = sres.HitCount != Hits.Count
             ? $" · 引擎全量 {sres.HitCount} 本"
             : "";
-        SearchProgress = $"搜索结束：命中 {Hits.Count} 本{suffix}{extra}";
+        SearchProgress = $"搜索结束: 命中 {Hits.Count} 本{suffix}{extra}";
         AppendLog("■ " + SearchProgress);
     }
 

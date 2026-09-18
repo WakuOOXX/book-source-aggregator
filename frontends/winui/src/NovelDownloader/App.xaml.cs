@@ -35,6 +35,9 @@ public partial class App : Application
     /// <summary>日志与设置页 VM (LogSettingsPage 直接取用)。</summary>
     public static LogSettingsViewModel? LogSettingsVM { get; private set; }
 
+    /// <summary>下载页 VM (DownloadsPage 直接取用; downloads.* ack 路由目标)。</summary>
+    public static DownloadsViewModel? DownloadsVM { get; private set; }
+
     /// <summary>本地设置存储 (主题 / 首启引导, %LOCALAPPDATA%\NovelDownloader\settings.json)。</summary>
     public static Services.SettingsStore? Settings { get; private set; }
 
@@ -71,8 +74,13 @@ public partial class App : Application
         AuthVM = new AuthViewModel();
         Router.Attach(AuthVM);
 
-        // 设置页 VM 独立接线: hello 到达 → 关于区刷新后端版本 / JS 引擎状态。
+        // 设置页 VM 独立接线: hello → 关于区/数据目录; data.*/清理 ack → 忙态与结果事件。
         LogSettingsVM = new LogSettingsViewModel(Settings);
+        Router.Attach(LogSettingsVM);
+
+        // 下载页 VM: downloads.list/delete ack + 错误/忙拒 解锁。
+        DownloadsVM = new DownloadsViewModel();
+        Router.Attach(DownloadsVM);
         Router.HelloReceived += OnHelloReceived;
 
         _window = new MainWindow();
@@ -111,7 +119,7 @@ public partial class App : Application
             return;
         }
 
-        vm?.AppendLog("正在启动 Python 后端 (server.py)…");
+        vm?.AppendLog("正在启动后端服务…");
         try
         {
             var ok = await backend.StartAsync();
@@ -151,7 +159,7 @@ public partial class App : Application
         Backend = null;
     }
 
-    /// <summary>M5: 供设置页切换主题时调用, 即时生效不重启。</summary>
+    /// <summary>供设置页切换主题时调用, 即时生效不重启。</summary>
     public static void ApplyTheme(ElementTheme theme)
     {
         if ((Application.Current as App)?._window?.Content is FrameworkElement root)

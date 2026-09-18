@@ -7,7 +7,7 @@ namespace NovelDownloader.ViewModels;
 public sealed class ShellViewModel : ObservableObject
 {
     private string _currentTag = "search";
-    private string _title = "小说下载器";
+    private string _title = "书源聚合下载器";
 
     /// <summary>当前导航目的地 Tag: search / sources / auth / log / settings。</summary>
     public string CurrentTag

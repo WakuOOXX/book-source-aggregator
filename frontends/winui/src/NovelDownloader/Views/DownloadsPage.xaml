@@ -1,0 +1,144 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Page
+    x:Class="NovelDownloader.Views.DownloadsPage"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:vm="using:NovelDownloader.ViewModels"
+    xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+    xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+    mc:Ignorable="d"
+    Background="Transparent">
+
+    <Grid>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+
+        <!-- 页头 -->
+        <StackPanel Grid.Row="0" Margin="{ThemeResource PageMargin}">
+            <TextBlock Text="下载"
+                       FontFamily="{ThemeResource DisplayFontFamily}"
+                       FontSize="{ThemeResource FontSizeTitleLarge}"
+                       FontWeight="SemiBold"
+                       Foreground="{ThemeResource TextPrimaryBrush}" />
+            <TextBlock Text="下载目录里已有的书。双击打开, 选中后可删除。"
+                       TextWrapping="Wrap"
+                       Foreground="{ThemeResource TextSecondaryBrush}" />
+        </StackPanel>
+
+        <!-- 工具行 -->
+        <StackPanel Grid.Row="1"
+                    Orientation="Horizontal"
+                    Spacing="8"
+                    Margin="{ThemeResource PageMargin}">
+            <Button x:Name="RefreshButton" Content="刷新" IsEnabled="{Binding CanEdit}" Click="Refresh_Click" />
+            <Button x:Name="OpenDirButton" Content="打开下载目录" IsEnabled="{Binding CanEdit}" Click="OpenDir_Click" />
+            <Button x:Name="DeleteButton" Content="删除选中" IsEnabled="{Binding CanEdit}" Click="Delete_Click" />
+        </StackPanel>
+
+        <!-- 文件列表 -->
+        <Border Grid.Row="2"
+                Margin="{ThemeResource PageMargin}"
+                Background="{ThemeResource CardBrush}"
+                BorderBrush="{ThemeResource BorderBrush}"
+                BorderThickness="1"
+                CornerRadius="{ThemeResource CardCornerRadius}">
+            <Grid>
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="*" />
+                </Grid.RowDefinitions>
+
+                <!-- 表头: 与行模板列宽一致 -->
+                <Grid Grid.Row="0" Padding="12,10" ColumnSpacing="8"
+                      Background="{ThemeResource CardSoftBrush}">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="3*" />
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="90" />
+                        <ColumnDefinition Width="130" />
+                    </Grid.ColumnDefinitions>
+                    <TextBlock Grid.Column="0" Text="书名" FontWeight="SemiBold"
+                               FontSize="{ThemeResource FontSizeCaption}"
+                               Foreground="{ThemeResource TextSecondaryBrush}" />
+                    <TextBlock Grid.Column="1" Text="格式" FontWeight="SemiBold"
+                               FontSize="{ThemeResource FontSizeCaption}"
+                               Foreground="{ThemeResource TextSecondaryBrush}" />
+                    <TextBlock Grid.Column="2" Text="大小" FontWeight="SemiBold"
+                               FontSize="{ThemeResource FontSizeCaption}"
+                               Foreground="{ThemeResource TextSecondaryBrush}" />
+                    <TextBlock Grid.Column="3" Text="下载时间" FontWeight="SemiBold"
+                               FontSize="{ThemeResource FontSizeCaption}"
+                               Foreground="{ThemeResource TextSecondaryBrush}" />
+                </Grid>
+
+                <ListView x:Name="FilesView"
+                          Grid.Row="1"
+                          Margin="0"
+                          SelectionMode="Single"
+                          HorizontalContentAlignment="Stretch"
+                          ItemsSource="{Binding Files}"
+                          DoubleTapped="FilesView_DoubleTapped">
+                    <ListView.ItemContainerTransitions>
+                        <TransitionCollection />
+                    </ListView.ItemContainerTransitions>
+                    <ListView.ItemContainerStyle>
+                        <Style TargetType="ListViewItem" BasedOn="{StaticResource DefaultListViewItemStyle}">
+                            <Setter Property="Padding" Value="0" />
+                            <Setter Property="MinHeight" Value="0" />
+                            <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+                        </Style>
+                    </ListView.ItemContainerStyle>
+                    <ListView.ItemTemplate>
+                        <DataTemplate x:DataType="vm:DownloadBookRow">
+                            <Grid Padding="12,8" ColumnSpacing="8"
+                                  AutomationProperties.Name="{Binding Name}">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="3*" />
+                                    <ColumnDefinition Width="Auto" />
+                                    <ColumnDefinition Width="90" />
+                                    <ColumnDefinition Width="130" />
+                                </Grid.ColumnDefinitions>
+                                <TextBlock Grid.Column="0" Text="{Binding Name}" VerticalAlignment="Center"
+                                           FontSize="{ThemeResource FontSizeBody}"
+                                           Foreground="{ThemeResource TextPrimaryBrush}"
+                                           TextTrimming="CharacterEllipsis" />
+                                <Border Grid.Column="1" VerticalAlignment="Center"
+                                        Padding="6,1" CornerRadius="4"
+                                        Background="{ThemeResource CardSoftBrush}"
+                                        BorderBrush="{ThemeResource BorderBrush}"
+                                        BorderThickness="1">
+                                    <TextBlock Text="{Binding Ext}" FontSize="11"
+                                               Foreground="{ThemeResource TextSecondaryBrush}" />
+                                </Border>
+                                <TextBlock Grid.Column="2" Text="{Binding SizeText}" VerticalAlignment="Center"
+                                           FontSize="{ThemeResource FontSizeBody}"
+                                           Foreground="{ThemeResource TextSecondaryBrush}" />
+                                <TextBlock Grid.Column="3" Text="{Binding ModifiedText}" VerticalAlignment="Center"
+                                           FontSize="{ThemeResource FontSizeBody}"
+                                           Foreground="{ThemeResource TextSecondaryBrush}" />
+                            </Grid>
+                        </DataTemplate>
+                    </ListView.ItemTemplate>
+                </ListView>
+
+                <TextBlock Grid.Row="1"
+                           Text="还没有下载的书。去「搜索」页挑几本下载吧。"
+                           HorizontalAlignment="Center"
+                           VerticalAlignment="Center"
+                           Foreground="{ThemeResource TextTertiaryBrush}"
+                           Visibility="{Binding IsEmpty, Converter={StaticResource BoolToVisibilityConverter}}" />
+            </Grid>
+        </Border>
+
+        <!-- 状态栏 -->
+        <TextBlock Grid.Row="3"
+                   Margin="{ThemeResource PageMargin}"
+                   Text="{Binding Status}"
+                   FontSize="{ThemeResource FontSizeCaption}"
+                   Foreground="{ThemeResource TextSecondaryBrush}" />
+    </Grid>
+</Page>

@@ -128,14 +128,14 @@ public sealed class SourcesViewModel : ObservableObject
         IsListLoaded = true;
         OnPropertyChanged(nameof(FileCountText));
         TraceLog.Write($"sources.list: {result.Files.Count} files, checked={result.Checked.Count}, dir={result.Dir}");
-        AppendLog($"· sources.list: {result.Files.Count} 个文件 · 清单 {result.Checked.Count} · 目录 {result.Dir}");
+        AppendLog($"· 书源清单: {result.Files.Count} 个文件 · 勾选 {result.Checked.Count} · 目录 {result.Dir}");
     }
 
     /// <summary>sources.list ack 无数据 (解析失败/形状不符): 保持旧列表, 仅解锁加载态。</summary>
     public void FinishListLoad()
     {
         IsListLoaded = true;
-        AppendLog("· sources.list 应答无数据, 保持现有清单。");
+        AppendLog("· 书源清单读取失败, 保持现有清单。");
     }
 
     // --------------------------------------------------------------- 校验入口 --

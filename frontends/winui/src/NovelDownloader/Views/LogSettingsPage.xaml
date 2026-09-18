@@ -22,7 +22,7 @@
                        FontSize="{ThemeResource FontSizeTitleLarge}"
                        FontWeight="SemiBold"
                        Foreground="{ThemeResource TextPrimaryBrush}" />
-            <TextBlock Text="外观、日志与关于信息。"
+            <TextBlock Text="外观、数据与关于信息。"
                        TextWrapping="Wrap"
                        Foreground="{ThemeResource TextSecondaryBrush}" />
         </StackPanel>
@@ -49,7 +49,7 @@
                         </StackPanel>
 
                         <StackPanel Spacing="4">
-                            <TextBlock Text="主题 (立即生效, 无需重启)"
+                            <TextBlock Text="主题"
                                        FontSize="{ThemeResource FontSizeCaption}"
                                        Foreground="{ThemeResource TextSecondaryBrush}" />
                             <!--
@@ -132,7 +132,7 @@
                     </StackPanel>
                 </Border>
 
-                <!-- ============ 数据 (M5 占位) ============ -->
+                <!-- ============ 数据 ============ -->
                 <Border Background="{ThemeResource CardBrush}"
                         BorderBrush="{ThemeResource BorderBrush}"
                         BorderThickness="1"
@@ -148,12 +148,15 @@
                         </StackPanel>
 
                         <StackPanel Spacing="4">
-                            <TextBlock Text="下载目录"
+                            <TextBlock Text="数据存储目录"
                                        FontSize="{ThemeResource FontSizeCaption}"
                                        Foreground="{ThemeResource TextTertiaryBrush}" />
-                            <TextBlock Text="{Binding DataDir}"
+                            <TextBlock Text="{Binding DataDirDisplay}"
                                        FontFamily="{ThemeResource MonoFontFamily}"
                                        FontSize="{ThemeResource FontSizeCaption}"
+                                       TextWrapping="Wrap"
+                                       Foreground="{ThemeResource TextSecondaryBrush}" />
+                            <TextBlock Text="书源文件、下载的书、登录头都存在这里。更改目录时这些内容会一起搬过去。"
                                        TextWrapping="Wrap"
                                        Foreground="{ThemeResource TextSecondaryBrush}" />
                         </StackPanel>
@@ -163,14 +166,53 @@
                                     Content="打开数据目录"
                                     MinWidth="0"
                                     Padding="14,6"
+                                    IsEnabled="{Binding CanEdit}"
                                     AutomationProperties.Name="打开数据目录"
                                     Click="OpenDataDirButton_Click" />
-                            <Button x:Name="ClearCacheButton"
-                                    Content="清除缓存"
+                            <Button x:Name="ChangeDataDirButton"
+                                    Content="更改目录…"
                                     MinWidth="0"
                                     Padding="14,6"
+                                    IsEnabled="{Binding CanEdit}"
+                                    AutomationProperties.Name="更改数据存储目录"
+                                    Click="ChangeDataDirButton_Click" />
+                        </StackPanel>
+                        <TextBlock Text="{Binding BusyHint}"
+                                   Visibility="{Binding IsBusy, Converter={StaticResource BoolToVisibilityConverter}}"
+                                   Foreground="{ThemeResource TextSecondaryBrush}" />
+
+                        <StackPanel Spacing="4">
+                            <TextBlock Text="清除缓存"
+                                       FontSize="{ThemeResource FontSizeCaption}"
+                                       Foreground="{ThemeResource TextTertiaryBrush}" />
+                            <TextBlock Text="删掉校验留下的中间文件和校验记录, 连同上次的勾选一起清空, 需要重新校验。书源文件、登录头、下载的书都不动。"
+                                       TextWrapping="Wrap"
+                                       Foreground="{ThemeResource TextSecondaryBrush}" />
+                            <Button x:Name="ClearCacheButton"
+                                    Content="清除缓存"
+                                    HorizontalAlignment="Left"
+                                    MinWidth="0"
+                                    Padding="14,6"
+                                    IsEnabled="{Binding CanEdit}"
                                     AutomationProperties.Name="清除缓存"
                                     Click="ClearCacheButton_Click" />
+                        </StackPanel>
+
+                        <StackPanel Spacing="4">
+                            <TextBlock Text="清除数据"
+                                       FontSize="{ThemeResource FontSizeCaption}"
+                                       Foreground="{ThemeResource TextTertiaryBrush}" />
+                            <TextBlock Text="删掉登录头、全部书源文件和运行记录, 书源恢复成内置的那一份, 相当于回到刚装好的状态。下载的书保留。"
+                                       TextWrapping="Wrap"
+                                       Foreground="{ThemeResource TextSecondaryBrush}" />
+                            <Button x:Name="ClearDataButton"
+                                    Content="清除数据"
+                                    HorizontalAlignment="Left"
+                                    MinWidth="0"
+                                    Padding="14,6"
+                                    IsEnabled="{Binding CanEdit}"
+                                    AutomationProperties.Name="清除数据"
+                                    Click="ClearDataButton_Click" />
                         </StackPanel>
                     </StackPanel>
                 </Border>

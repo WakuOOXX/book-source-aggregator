@@ -21,9 +21,6 @@ public sealed partial class SourcesPage : Page
         ViewModel = App.SourcesVM ?? new SourcesViewModel();
         DataContext = ViewModel;
         InitializeComponent();
-
-        // 校验日志自动滚到底。
-        ViewModel.LogBuffer.CollectionChanged += OnLogChanged;
     }
 
     private BackendClient? Backend => App.Backend;
@@ -32,14 +29,6 @@ public sealed partial class SourcesPage : Page
     {
         base.OnNavigatedTo(e);
         _ = RefreshSourcesListAsync("进入书源页");
-    }
-
-    private void OnLogChanged(object? sender, NotifyCollectionChangedEventArgs e)
-    {
-        if (e.Action == NotifyCollectionChangedAction.Add && ViewModel.LogBuffer.Count > 0)
-        {
-            VerifyLogList.ScrollIntoView(ViewModel.LogBuffer[^1]);
-        }
     }
 
     // ------------------------------------------------------- 校验入口 --
@@ -79,7 +68,7 @@ public sealed partial class SourcesPage : Page
 
         if (ViewModel.SourceFiles.Count == 0)
         {
-            ViewModel.AppendLog("✘ 书源清单为空 (sources.list 未加载), 无法校验。");
+            ViewModel.AppendLog("✘ 书源清单还没加载好, 无法校验。");
             return;
         }
 

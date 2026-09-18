@@ -52,7 +52,7 @@
                     CornerRadius="{ThemeResource CardCornerRadius}">
                 <Grid>
                     <!-- 加载占位 (auth.list 未回) -->
-                    <TextBlock Text="正在加载已配置源…"
+                    <TextBlock Text="正在加载已配置站点…"
                                Margin="12"
                                VerticalAlignment="Top"
                                Foreground="{ThemeResource TextTertiaryBrush}"
@@ -146,7 +146,6 @@
         <Grid Grid.Column="1" RowSpacing="12">
             <Grid.RowDefinitions>
                 <RowDefinition Height="Auto" />
-                <RowDefinition Height="Auto" />
                 <RowDefinition Height="*" />
             </Grid.RowDefinitions>
 
@@ -162,7 +161,7 @@
                                Foreground="{ThemeResource TextSecondaryBrush}"
                                TextWrapping="Wrap" />
 
-                    <TextBlock Text="Cookie (多行, 可粘贴整段) · 存留到站点会话"
+                    <TextBlock Text="Cookie（多行，可粘贴整段）· 搜索与下载时自动带上"
                                FontWeight="SemiBold"
                                FontSize="{ThemeResource FontSizeCaption}"
                                Foreground="{ThemeResource TextSecondaryBrush}" />
@@ -176,7 +175,7 @@
                              PlaceholderText="BDUSS=…; …"
                              AutomationProperties.Name="Cookie" />
 
-                    <TextBlock Text="{}自定义 Header JSON (可空, 如 {&quot;Referer&quot;: &quot;https://xx.com/&quot;})"
+                    <TextBlock Text="{}自定义 Header JSON（可空，如 {&quot;Referer&quot;: &quot;https://xx.com/&quot;}）"
                                FontWeight="SemiBold"
                                FontSize="{ThemeResource FontSizeCaption}"
                                Foreground="{ThemeResource TextSecondaryBrush}" />
@@ -187,7 +186,7 @@
                              TextWrapping="NoWrap"
                              FontFamily="{ThemeResource MonoFontFamily}"
                              FontSize="{ThemeResource FontSizeMono}"
-                             PlaceholderText="{}e.g. {&quot;Referer&quot;: &quot;https://…&quot;}"
+                             PlaceholderText="{}例: {&quot;Referer&quot;: &quot;https://…&quot;}"
                              AutomationProperties.Name="自定义Header" />
 
                     <TextBlock Text="{Binding FetchStatus}"
@@ -267,11 +266,11 @@
                                 AutomationProperties.Name="手动逐站"
                                 Click="ManualGrab_Click" />
                         <CheckBox Grid.Column="2"
-                                  Content="跳过已配站"
+                                  Content="跳过已配置站点"
                                   MinWidth="0"
                                   VerticalAlignment="Center"
                                   IsChecked="{Binding SkipConfigured, Mode=TwoWay}"
-                                  AutomationProperties.Name="跳过已配站" />
+                                  AutomationProperties.Name="跳过已配置站点" />
                         <TextBlock Grid.Column="3"
                                    Text="{Binding FilteredCountText}"
                                    HorizontalAlignment="Right"
@@ -348,37 +347,6 @@
                     </Grid>
                 </StackPanel>
             </Border>
-
-            <!-- ============ 日志 ============ -->
-            <muxc:Expander Grid.Row="2"
-                           HorizontalAlignment="Stretch"
-                           HorizontalContentAlignment="Stretch"
-                           IsExpanded="True">
-                <muxc:Expander.Header>
-                    <StackPanel Orientation="Horizontal" Spacing="8">
-                        <FontIcon Glyph="&#xE9D9;" FontSize="14" />
-                        <TextBlock Text="登录头日志" VerticalAlignment="Center" />
-                    </StackPanel>
-                </muxc:Expander.Header>
-                <ListView x:Name="AuthLogList"
-                          Height="120"
-                          Margin="0,4,0,0"
-                          ItemsSource="{Binding LogBuffer}"
-                          SelectionMode="None"
-                          IsItemClickEnabled="False">
-                    <ListView.ItemContainerTransitions>
-                        <TransitionCollection />
-                    </ListView.ItemContainerTransitions>
-                    <ListView.ItemTemplate>
-                        <DataTemplate>
-                            <TextBlock Text="{Binding}"
-                                       FontFamily="{ThemeResource MonoFontFamily}"
-                                       FontSize="{ThemeResource FontSizeMono}"
-                                       TextWrapping="Wrap" />
-                        </DataTemplate>
-                    </ListView.ItemTemplate>
-                </ListView>
-            </muxc:Expander>
         </Grid>
     </Grid>
 </Page>

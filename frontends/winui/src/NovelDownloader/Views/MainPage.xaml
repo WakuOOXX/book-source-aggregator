@@ -18,7 +18,6 @@
             <RowDefinition Height="*" />
             <RowDefinition Height="Auto" />
             <RowDefinition Height="Auto" />
-            <RowDefinition Height="Auto" />
         </Grid.RowDefinitions>
 
         <!-- ==================== 顶部: 大搜索框 + 搜索域 + 搜索/停止 ==================== -->
@@ -71,18 +70,23 @@
 
             <StackPanel Orientation="Horizontal" Spacing="8"
                         HorizontalAlignment="Right" VerticalAlignment="Center">
+                <Button Content="全选" MinWidth="0" Click="SelectAll_Click" />
+                <Button Content="反选" MinWidth="0" Click="InvertSelection_Click" />
+                <Button Content="清空" MinWidth="0" Click="ClearSelection_Click" />
                 <TextBlock Text="书源分组:"
+                           Margin="8,0,0,0"
                            VerticalAlignment="Center"
                            Foreground="{ThemeResource TextSecondaryBrush}" />
                 <ComboBox x:Name="SourceGroupCombo"
                           MinWidth="160"
+                          ItemsSource="{Binding SourceGroups}"
                           PlaceholderText="全部"
                           AutomationProperties.Name="书源分组"
                           SelectedItem="{Binding SourceGroup, Mode=TwoWay}" />
             </StackPanel>
         </Grid>
 
-        <!-- ==================== 结果工具行 ==================== -->
+        <!-- ==================== 结果计数行 ==================== -->
         <Grid Grid.Row="2" Margin="24,0,24,8">
             <StackPanel Orientation="Horizontal" Spacing="10" VerticalAlignment="Center">
                 <Border Background="{ThemeResource AccentLightBrush}"
@@ -95,13 +99,6 @@
                 <TextBlock Text="{Binding SelectedBadgeText}"
                            VerticalAlignment="Center"
                            Foreground="{ThemeResource TextTertiaryBrush}" />
-            </StackPanel>
-
-            <StackPanel Orientation="Horizontal" Spacing="4"
-                        HorizontalAlignment="Right" VerticalAlignment="Center">
-                <Button Content="全选" MinWidth="0" Click="SelectAll_Click" />
-                <Button Content="反选" MinWidth="0" Click="InvertSelection_Click" />
-                <Button Content="清空" MinWidth="0" Click="ClearSelection_Click" />
             </StackPanel>
         </Grid>
 
@@ -116,18 +113,18 @@
                 <RowDefinition Height="*" />
             </Grid.RowDefinitions>
 
-            <!-- 表头行: 列宽 300 / 110 / 90 / 160 / * 与下方 ItemTemplate 逐列一致 -->
+            <!-- 表头行: 等比列宽 2.6*/1*/0.9*/1.5*/1.2* (WinUI 的 ColumnDefinition 不支持 MinWidth) 与下方 ItemTemplate 逐列一致 -->
             <Border Grid.Row="0"
                     Background="{ThemeResource CardSoftBrush}"
                     BorderBrush="{ThemeResource BorderBrush}"
                     BorderThickness="0,0,0,1">
                 <Grid Padding="12,10" ColumnSpacing="8">
                     <Grid.ColumnDefinitions>
-                        <ColumnDefinition Width="300" />
-                        <ColumnDefinition Width="110" />
-                        <ColumnDefinition Width="90" />
-                        <ColumnDefinition Width="160" />
-                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="2.6*" />
+                        <ColumnDefinition Width="1*" />
+                        <ColumnDefinition Width="0.9*" />
+                        <ColumnDefinition Width="1.5*" />
+                        <ColumnDefinition Width="1.2*" />
                     </Grid.ColumnDefinitions>
                     <TextBlock Grid.Column="0" Text="书名" FontWeight="SemiBold"
                                FontSize="{ThemeResource FontSizeCaption}"
@@ -144,6 +141,12 @@
                     <TextBlock Grid.Column="4" Text="书源" FontWeight="SemiBold"
                                FontSize="{ThemeResource FontSizeCaption}"
                                Foreground="{ThemeResource TextSecondaryBrush}" />
+                    <!-- 框选提示: 三级色小字贴表头右侧 -->
+                    <TextBlock Grid.Column="0" Grid.ColumnSpan="5"
+                               HorizontalAlignment="Right" VerticalAlignment="Center"
+                               Text="Ctrl 加选 · Shift 连选 · 空白处拖动框选"
+                               FontSize="{ThemeResource FontSizeCaption}"
+                               Foreground="{ThemeResource TextTertiaryBrush}" />
                 </Grid>
             </Border>
 
@@ -152,13 +155,18 @@
                  命中洪流时每条 Add 都开一个入场动画 → UI 线程被动画合成占满。
                  虚拟化仍由默认 ItemsPanel (VirtualizingStackPanel) 负责, ItemTemplate
                  为 Border>Grid 不破坏回收。 -->
-            <ListView Grid.Row="1" x:Name="ResultsView"
-                      Margin="0"
-                      SelectionMode="Extended"
-                      HorizontalContentAlignment="Stretch"
-                      ScrollViewer.HorizontalScrollBarVisibility="Disabled"
-                      ItemsSource="{Binding Hits}"
-                      SelectionChanged="ResultsView_SelectionChanged">
+            <!-- 行区 + 框选覆盖层: ListView 自带 Extended 语义 (Ctrl/Shift/在行上拖动连续选),
+                 空白区按下拖动的「资源管理器式框选」由代码后置在 MarqueeCanvas 上画绿框,
+                 覆盖层 IsHitTestVisible=False 不吃命中, 只负责显示绿框。 -->
+            <Grid Grid.Row="1">
+                <ListView x:Name="ResultsView"
+                          Margin="0"
+                          SelectionMode="Extended"
+                          HorizontalContentAlignment="Stretch"
+                          ScrollViewer.HorizontalScrollBarVisibility="Disabled"
+                          ItemsSource="{Binding Hits}"
+                          ToolTipService.ToolTip="Ctrl 加选 · Shift 连选 · 空白处拖动框选"
+                          SelectionChanged="ResultsView_SelectionChanged">
                 <ListView.ItemContainerTransitions>
                     <TransitionCollection />
                 </ListView.ItemContainerTransitions>
@@ -177,11 +185,11 @@
                                 AutomationProperties.HelpText="{Binding SubtitleLine}">
                             <Grid Padding="12,8" ColumnSpacing="8">
                                 <Grid.ColumnDefinitions>
-                                    <ColumnDefinition Width="300" />
-                                    <ColumnDefinition Width="110" />
-                                    <ColumnDefinition Width="90" />
-                                    <ColumnDefinition Width="160" />
-                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="2.6*" />
+                                    <ColumnDefinition Width="1*" />
+                                    <ColumnDefinition Width="0.9*" />
+                                    <ColumnDefinition Width="1.5*" />
+                                    <ColumnDefinition Width="1.2*" />
                                 </Grid.ColumnDefinitions>
                                 <TextBlock Grid.Column="0" Text="{Binding Name}" VerticalAlignment="Center"
                                            FontSize="{ThemeResource FontSizeBody}"
@@ -207,7 +215,17 @@
                         </Border>
                     </DataTemplate>
                 </ListView.ItemTemplate>
-            </ListView>
+                </ListView>
+
+                <Canvas x:Name="MarqueeCanvas" IsHitTestVisible="False">
+                    <Rectangle x:Name="MarqueeRect"
+                               Visibility="Collapsed"
+                               Stroke="{ThemeResource MarqueeBrush}"
+                               StrokeThickness="2"
+                               Fill="{ThemeResource MarqueeFillBrush}"
+                               RadiusX="2" RadiusY="2" />
+                </Canvas>
+            </Grid>
 
             <!-- 空结果占位 (仅空闲且无结果时浮在行区中央) -->
             <TextBlock x:Name="EmptyHint" Grid.Row="1"
@@ -217,40 +235,8 @@
                        Visibility="{Binding ShowEmptyHint, Converter={StaticResource BoolToVisibilityConverter}}" />
         </Grid>
 
-        <!-- ==================== 运行日志抽屉 (可折叠, 任意时刻可见后端事件流) ==================== -->
-        <muxc:Expander Grid.Row="4"
-                       Margin="24,12,24,0"
-                       HorizontalAlignment="Stretch"
-                       HorizontalContentAlignment="Stretch"
-                       IsExpanded="True">
-            <muxc:Expander.Header>
-                <StackPanel Orientation="Horizontal" Spacing="8">
-                    <FontIcon Glyph="&#xE9D9;" FontSize="14" />
-                    <TextBlock Text="运行日志" VerticalAlignment="Center" />
-                </StackPanel>
-            </muxc:Expander.Header>
-            <ListView x:Name="LogList"
-                      Height="132"
-                      Margin="0,4,0,0"
-                      ItemsSource="{Binding LogBuffer}"
-                      SelectionMode="None"
-                      IsItemClickEnabled="False">
-                <ListView.ItemContainerTransitions>
-                    <TransitionCollection />
-                </ListView.ItemContainerTransitions>
-                <ListView.ItemTemplate>
-                    <DataTemplate>
-                        <TextBlock Text="{Binding}"
-                                   FontFamily="{ThemeResource MonoFontFamily}"
-                                   FontSize="{ThemeResource FontSizeMono}"
-                                   TextWrapping="Wrap" />
-                    </DataTemplate>
-                </ListView.ItemTemplate>
-            </ListView>
-        </muxc:Expander>
-
         <!-- ==================== 底部吸底操作栏 ==================== -->
-        <Border Grid.Row="5"
+        <Border Grid.Row="4"
                 Margin="24,12,24,0"
                 Padding="12"
                 Background="{ThemeResource CardBrush}"
@@ -272,26 +258,29 @@
                          绑定, 让 VM 上的 ExportFormat / DownloadMode 收到的是字符串而非 ComboBoxItem 对象。 -->
                     <ComboBox x:Name="FormatCombo"
                               MinWidth="120"
+                              ToolTipService.ToolTip="自动: 先按 EPUB 导出, 书源不支持时改存 TXT。"
                               AutomationProperties.Name="导出格式"
                               SelectedValuePath="Content"
                               SelectedValue="{Binding ExportFormat, Mode=TwoWay}">
-                        <ComboBoxItem Content="TXT" />
+                        <ComboBoxItem Content="自动" />
                         <ComboBoxItem Content="EPUB" />
+                        <ComboBoxItem Content="TXT" />
                     </ComboBox>
                     <ComboBox x:Name="CombineCombo"
                               MinWidth="140"
-                              AutomationProperties.Name="合并模式"
+                              ToolTipService.ToolTip="万里挑一: 选中的书依次换源试下, 第一本成功即停。全部下载: 每本选中的书都各存一个文件。"
+                              AutomationProperties.Name="下载模式"
                               SelectedValuePath="Content"
                               SelectedValue="{Binding DownloadMode, Mode=TwoWay}">
-                        <ComboBoxItem Content="单一" />
-                        <ComboBoxItem Content="合并" />
+                        <ComboBoxItem Content="万里挑一" />
+                        <ComboBoxItem Content="全部下载" />
                     </ComboBox>
                 </StackPanel>
             </Grid>
         </Border>
 
         <!-- ==================== 状态栏 ==================== -->
-        <Grid Grid.Row="6" Margin="24,8,24,12" ColumnSpacing="12">
+        <Grid Grid.Row="5" Margin="24,8,24,12" ColumnSpacing="12">
             <Grid.ColumnDefinitions>
                 <ColumnDefinition Width="*" />
                 <ColumnDefinition Width="Auto" />

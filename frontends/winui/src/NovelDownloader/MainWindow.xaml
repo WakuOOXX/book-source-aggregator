@@ -7,16 +7,17 @@
     xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
     xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
     mc:Ignorable="d"
-    Title="小说下载器">
+    Title="书源聚合下载器">
 
-    <!-- 根 Grid: 顶部自定义 TitleBar (Mica 延伸) + 下方 NavigationView 壳 -->
+    <!-- 根 Grid: 顶部自定义 TitleBar (Mica 延伸, 左上汉堡) + 内容区 (Frame + 全局日志);
+         遮罩与左侧滑入导航面板挂在根层 (RowSpan=2 盖住标题栏, 顶栏 ☰ 原位收回)。 -->
     <Grid x:Name="RootGrid" Background="{ThemeResource PageBackgroundBrush}">
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto" />
             <RowDefinition Height="*" />
         </Grid.RowDefinitions>
 
-        <!-- ============ 自定义 TitleBar (ExtendsContentIntoTitleBar) ============ -->
+        <!-- ============ 自定义 TitleBar: [汉堡+品牌][拖拽区] 两列, SetTitleBar 只指右列 ============ -->
         <Grid x:Name="AppTitleBar"
               Grid.Row="0"
               Height="{ThemeResource TitleBarHeight}"
@@ -26,117 +27,182 @@
                 <ColumnDefinition Width="*" />
             </Grid.ColumnDefinitions>
 
-            <!-- 与 NavigationView 的 LeftCompact 图标栏对齐 -->
             <StackPanel Grid.Column="0"
                         Orientation="Horizontal"
                         VerticalAlignment="Center"
-                        Margin="16,0,0,0"
+                        Margin="4,0,0,0"
                         Spacing="10">
+                <!-- 汉堡: 任务管理器式放最左; 面板展开时隐藏, 由面板顶栏 ☰ 接管 -->
+                <Button x:Name="HamburgerButton"
+                        Width="40"
+                        Height="32"
+                        VerticalAlignment="Center"
+                        Background="Transparent"
+                        BorderThickness="0"
+                        ToolTipService.ToolTip="菜单"
+                        AutomationProperties.Name="打开导航菜单"
+                        Click="Hamburger_Click">
+                    <FontIcon Glyph="&#xE700;" FontSize="16" />
+                </Button>
                 <FontIcon Glyph="&#xE8F1;"
                           FontSize="16"
+                          Margin="4,0,0,0"
+                          VerticalAlignment="Center"
                           Foreground="{ThemeResource AccentBrush}" />
-                <TextBlock Text="小说下载器"
+                <TextBlock Text="书源聚合下载器"
                            VerticalAlignment="Center"
                            FontFamily="{ThemeResource BodyFontFamily}"
                            FontSize="13"
                            Foreground="{ThemeResource TextSecondaryBrush}" />
             </StackPanel>
+
+            <!-- 唯一可拖拽区 (标题按钮/汉堡都在这列之外) -->
+            <Border x:Name="AppTitleDrag" Grid.Column="1" Background="Transparent" />
         </Grid>
 
-        <!-- ============ NavigationView 壳 ============ -->
-        <muxc:NavigationView x:Name="NavView"
-                             Grid.Row="1"
-                             PaneDisplayMode="LeftCompact"
-                             IsBackButtonVisible="Collapsed"
-                             IsSettingsVisible="False"
-                             IsPaneToggleButtonVisible="False"
-                             SelectionFollowsFocus="Disabled"
-                             SelectionChanged="NavView_SelectionChanged">
+        <!-- ============ 内容区: Frame + 全局日志 (面板展开时被遮罩盖住, 布局不挤压) ============ -->
+        <Grid Grid.Row="1">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="*" />
+                <RowDefinition Height="Auto" />
+            </Grid.RowDefinitions>
+            <Frame x:Name="ContentFrame" Grid.Row="0" />
+            <muxc:Expander x:Name="LogExpander"
+                           Grid.Row="1"
+                           IsExpanded="True"
+                           HorizontalAlignment="Stretch"
+                           HorizontalContentAlignment="Stretch">
+                <muxc:Expander.Header>
+                    <StackPanel Orientation="Horizontal" Spacing="8">
+                        <FontIcon Glyph="&#xE9D9;" FontSize="14" />
+                        <TextBlock Text="运行日志" VerticalAlignment="Center" />
+                    </StackPanel>
+                </muxc:Expander.Header>
+                <Border Background="{ThemeResource BackgroundDeepBrush}"
+                        BorderBrush="{ThemeResource BorderBrush}"
+                        BorderThickness="1"
+                        CornerRadius="4">
+                    <ListView x:Name="GlobalLogList"
+                              Height="120"
+                              Margin="0,4,0,4"
+                              SelectionMode="None"
+                              IsItemClickEnabled="False">
+                        <ListView.ItemContainerTransitions>
+                            <TransitionCollection />
+                        </ListView.ItemContainerTransitions>
+                        <ListView.ItemContainerStyle>
+                            <Style TargetType="ListViewItem" BasedOn="{StaticResource DefaultListViewItemStyle}">
+                                <Setter Property="Padding" Value="12,3" />
+                                <Setter Property="MinHeight" Value="0" />
+                                <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+                            </Style>
+                        </ListView.ItemContainerStyle>
+                        <ListView.ItemTemplate>
+                            <DataTemplate>
+                                <TextBlock Text="{Binding}"
+                                           FontFamily="{ThemeResource MonoFontFamily}"
+                                           FontSize="{ThemeResource FontSizeMono}"
+                                           TextWrapping="Wrap"
+                                           Foreground="{ThemeResource TextSecondaryBrush}" />
+                            </DataTemplate>
+                        </ListView.ItemTemplate>
+                    </ListView>
+                </Border>
+            </muxc:Expander>
+        </Grid>
 
-            <muxc:NavigationView.MenuItems>
-                <muxc:NavigationViewItem Content="搜索" Tag="search" ToolTipService.ToolTip="搜索">
-                    <muxc:NavigationViewItem.Icon>
-                        <FontIcon Glyph="&#xE721;" />
-                    </muxc:NavigationViewItem.Icon>
-                </muxc:NavigationViewItem>
+        <!-- 遮罩: 点任意处关面板 (盖满整窗含标题栏) -->
+        <Border x:Name="PaneMask"
+                Grid.Row="0"
+                Grid.RowSpan="2"
+                Background="#4D000000"
+                Visibility="Collapsed"
+                Tapped="PaneMask_Tapped" />
 
-                <muxc:NavigationViewItem Content="书源" Tag="sources" ToolTipService.ToolTip="书源管理">
-                    <muxc:NavigationViewItem.Icon>
-                        <FontIcon Glyph="&#xE8F1;" />
-                    </muxc:NavigationViewItem.Icon>
-                </muxc:NavigationViewItem>
-
-                <muxc:NavigationViewItem Content="登录头" Tag="auth" ToolTipService.ToolTip="登录头管理">
-                    <muxc:NavigationViewItem.Icon>
-                        <FontIcon Glyph="&#xE72E;" />
-                    </muxc:NavigationViewItem.Icon>
-                </muxc:NavigationViewItem>
-            </muxc:NavigationView.MenuItems>
-
-            <muxc:NavigationView.FooterMenuItems>
-                <muxc:NavigationViewItem Content="日志" Tag="log" ToolTipService.ToolTip="日志">
-                    <muxc:NavigationViewItem.Icon>
-                        <FontIcon Glyph="&#xE9D9;" />
-                    </muxc:NavigationViewItem.Icon>
-                </muxc:NavigationViewItem>
-
-                <muxc:NavigationViewItem Content="设置" Tag="settings" ToolTipService.ToolTip="设置">
-                    <muxc:NavigationViewItem.Icon>
-                        <FontIcon Glyph="&#xE7C3;" />
-                    </muxc:NavigationViewItem.Icon>
-                </muxc:NavigationViewItem>
-            </muxc:NavigationView.FooterMenuItems>
-
-            <!-- 右侧内容区: Frame + 全局日志面板 -->
+        <!-- 左侧滑入导航面板: Acrylic 毛玻璃, TranslateTransform 初始藏在屏外 -->
+        <Border x:Name="NavPane"
+                Grid.Row="0"
+                Grid.RowSpan="2"
+                Width="300"
+                HorizontalAlignment="Left"
+                Opacity="0"
+                Background="{ThemeResource PaneAcrylicBrush}"
+                BorderBrush="{ThemeResource BorderBrush}"
+                BorderThickness="0,0,1,0"
+                Visibility="Collapsed">
+            <Border.RenderTransform>
+                <TranslateTransform x:Name="NavPaneShift" X="-300" />
+            </Border.RenderTransform>
             <Grid>
                 <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto" />
                     <RowDefinition Height="*" />
                     <RowDefinition Height="Auto" />
                 </Grid.RowDefinitions>
-                <Frame x:Name="ContentFrame" Grid.Row="0" />
-                <muxc:Expander x:Name="LogExpander"
-                               Grid.Row="1"
-                               IsExpanded="True"
-                               HorizontalAlignment="Stretch"
-                               HorizontalContentAlignment="Stretch">
-                    <muxc:Expander.Header>
-                        <StackPanel Orientation="Horizontal" Spacing="8">
-                            <FontIcon Glyph="&#xE9D9;" FontSize="14" />
-                            <TextBlock Text="运行日志" VerticalAlignment="Center" />
+
+                <!-- 面板顶栏: 与标题栏同高, 内嵌 ☰ —— 再点一下收回 (任务管理器式原位开关) -->
+                <Grid Grid.Row="0"
+                      Height="{ThemeResource TitleBarHeight}"
+                      Margin="4,0,0,0">
+                    <Button x:Name="PaneHamburgerButton"
+                            Width="40"
+                            Height="32"
+                            HorizontalAlignment="Left"
+                            VerticalAlignment="Center"
+                            Background="Transparent"
+                            BorderThickness="0"
+                            ToolTipService.ToolTip="收起菜单"
+                            AutomationProperties.Name="收起导航菜单"
+                            Click="Hamburger_Click">
+                        <FontIcon Glyph="&#xE700;" FontSize="16" />
+                    </Button>
+                </Grid>
+
+                <!-- 导航列表: ListBox 自带选中态 -->
+                <ListBox x:Name="NavList"
+                         Grid.Row="1"
+                         Margin="8,0,8,8"
+                         Background="Transparent"
+                         BorderThickness="0"
+                         SelectionChanged="NavList_SelectionChanged">
+                    <ListBoxItem Tag="search" AutomationProperties.Name="搜索">
+                        <StackPanel Orientation="Horizontal" Spacing="12">
+                            <FontIcon Glyph="&#xE721;" FontSize="16" Width="20" />
+                            <TextBlock Text="搜索" VerticalAlignment="Center" />
                         </StackPanel>
-                    </muxc:Expander.Header>
-                    <Border Background="{ThemeResource BackgroundDeepBrush}"
-                            BorderBrush="{ThemeResource BorderBrush}"
-                            BorderThickness="1"
-                            CornerRadius="4">
-                        <ListView x:Name="GlobalLogList"
-                                  Height="120"
-                                  Margin="0,4,0,4"
-                                  SelectionMode="None"
-                                  IsItemClickEnabled="False">
-                            <ListView.ItemContainerTransitions>
-                                <TransitionCollection />
-                            </ListView.ItemContainerTransitions>
-                            <ListView.ItemContainerStyle>
-                                <Style TargetType="ListViewItem" BasedOn="{StaticResource DefaultListViewItemStyle}">
-                                    <Setter Property="Padding" Value="12,3" />
-                                    <Setter Property="MinHeight" Value="0" />
-                                    <Setter Property="HorizontalContentAlignment" Value="Stretch" />
-                                </Style>
-                            </ListView.ItemContainerStyle>
-                            <ListView.ItemTemplate>
-                                <DataTemplate>
-                                    <TextBlock Text="{Binding}"
-                                               FontFamily="{ThemeResource MonoFontFamily}"
-                                               FontSize="{ThemeResource FontSizeMono}"
-                                               TextWrapping="Wrap"
-                                               Foreground="{ThemeResource TextSecondaryBrush}" />
-                                </DataTemplate>
-                            </ListView.ItemTemplate>
-                        </ListView>
-                    </Border>
-                </muxc:Expander>
+                    </ListBoxItem>
+                    <ListBoxItem Tag="sources" AutomationProperties.Name="书源">
+                        <StackPanel Orientation="Horizontal" Spacing="12">
+                            <FontIcon Glyph="&#xE8F1;" FontSize="16" Width="20" />
+                            <TextBlock Text="书源" VerticalAlignment="Center" />
+                        </StackPanel>
+                    </ListBoxItem>
+                    <ListBoxItem Tag="downloads" AutomationProperties.Name="下载">
+                        <StackPanel Orientation="Horizontal" Spacing="12">
+                            <FontIcon Glyph="&#xE896;" FontSize="16" Width="20" />
+                            <TextBlock Text="下载" VerticalAlignment="Center" />
+                        </StackPanel>
+                    </ListBoxItem>
+                    <ListBoxItem Tag="auth" AutomationProperties.Name="登录头">
+                        <StackPanel Orientation="Horizontal" Spacing="12">
+                            <FontIcon Glyph="&#xE72E;" FontSize="16" Width="20" />
+                            <TextBlock Text="登录头" VerticalAlignment="Center" />
+                        </StackPanel>
+                    </ListBoxItem>
+                    <ListBoxItem Tag="settings" AutomationProperties.Name="日志与设置">
+                        <StackPanel Orientation="Horizontal" Spacing="12">
+                            <FontIcon Glyph="&#xE7C3;" FontSize="16" Width="20" />
+                            <TextBlock Text="日志与设置" VerticalAlignment="Center" />
+                        </StackPanel>
+                    </ListBoxItem>
+                </ListBox>
+
+                <TextBlock x:Name="PaneVersionText"
+                           Grid.Row="2"
+                           Margin="16,8,16,12"
+                           FontSize="12"
+                           Foreground="{ThemeResource TextTertiaryBrush}" />
             </Grid>
-        </muxc:NavigationView>
+        </Border>
     </Grid>
 </Window>

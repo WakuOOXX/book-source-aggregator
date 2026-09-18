@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-  设计令牌 —— 小说下载器 WinUI 3 前端
+  设计令牌 —— 书源聚合下载器 WinUI 3 前端
   来源: 计划 §5.1 (Light 准入值 = 现 theme_fluent.py 映射; Dark 新定),
         校准自 theme_fluent.py 与 样本/07-fluent-win11.html。
 
@@ -51,6 +51,8 @@
             <Color x:Key="ScrollThumbColor">#a9b0ba</Color>
             <Color x:Key="ScrollThumbHoverColor">#7b828d</Color>
             <Color x:Key="SelectionTextColor">#cfe3f5</Color>
+            <!-- 导航面板毛玻璃 (Win11 采桌面背景, 不支持时落 FallbackColor) -->
+            <AcrylicBrush x:Key="PaneAcrylicBrush" TintColor="#f9fbfd" TintOpacity="0.75" FallbackColor="#f9fbfd" />
         </ResourceDictionary>
 
         <!-- ============================ Dark ============================= -->
@@ -85,6 +87,8 @@
             <Color x:Key="ScrollThumbColor">#5a5a5a</Color>
             <Color x:Key="ScrollThumbHoverColor">#7a7a7a</Color>
             <Color x:Key="SelectionTextColor">#2b5270</Color>
+            <!-- 导航面板毛玻璃 (Win11 采桌面背景, 不支持时落 FallbackColor) -->
+            <AcrylicBrush x:Key="PaneAcrylicBrush" TintColor="#323232" TintOpacity="0.8" FallbackColor="#323232" />
         </ResourceDictionary>
 
         <!-- Default 指向 Light -->
@@ -119,6 +123,8 @@
             <Color x:Key="ScrollThumbColor">#a9b0ba</Color>
             <Color x:Key="ScrollThumbHoverColor">#7b828d</Color>
             <Color x:Key="SelectionTextColor">#cfe3f5</Color>
+            <!-- 导航面板毛玻璃 (Win11 采桌面背景, 不支持时落 FallbackColor) -->
+            <AcrylicBrush x:Key="PaneAcrylicBrush" TintColor="#f9fbfd" TintOpacity="0.75" FallbackColor="#f9fbfd" />
         </ResourceDictionary>
     </ResourceDictionary.ThemeDictionaries>
 
@@ -133,6 +139,12 @@
     <SolidColorBrush x:Key="BackgroundDeepBrush" Color="{ThemeResource BackgroundDeepColor}" />
     <SolidColorBrush x:Key="CardBrush" Color="{ThemeResource CardColor}" />
     <SolidColorBrush x:Key="CardSoftBrush" Color="{ThemeResource CardSoftColor}" />
+
+    <!-- 导航面板毛玻璃: AcrylicBrush 默认即 HostBackdrop (采桌面背景), 随主题各配一套 Tint。
+         注: 显式写 BackgroundSource="HostBackdrop" 会让 XamlCompiler 静默崩溃 (exit 1), 勿加回。 -->
+    <SolidColorBrush x:Key="MarqueeBrush" Color="#6CC04A" />
+    <SolidColorBrush x:Key="MarqueeFillBrush" Color="#1F6CC04A" />
+
     <SolidColorBrush x:Key="BorderBrush" Color="{ThemeResource BorderColor}" />
     <SolidColorBrush x:Key="BorderStrongBrush" Color="{ThemeResource BorderStrongColor}" />
 
@@ -165,7 +177,7 @@
     <x:Double x:Key="FontSizeTitle">20</x:Double>
     <x:Double x:Key="FontSizeTitleLarge">28</x:Double>
     <x:Double x:Key="FontSizeMono">13</x:Double>
-    <x:Double x:Key="FontSizeSearchBox">16</x:Double>
+    <x:Double x:Key="FontSizeSearchBox">14</x:Double>
 
     <!-- ===================== 间距 (4px 网格) ===================== -->
     <x:Double x:Key="SpacingXs">4</x:Double>
@@ -184,7 +196,7 @@
     <CornerRadius x:Key="ControlCornerRadiusSmall">4</CornerRadius>
 
     <!-- 常用尺寸 -->
-    <x:Double x:Key="SearchBoxHeight">48</x:Double>
+    <x:Double x:Key="SearchBoxHeight">32</x:Double>
     <x:Double x:Key="ResultRowHeight">56</x:Double>
     <x:Double x:Key="TitleBarHeight">48</x:Double>
 </ResourceDictionary>
