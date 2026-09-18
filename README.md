@@ -51,7 +51,7 @@ Windows 桌面应用 · WinUI 3 界面 + Python 后端 · 自研 Legado 规则�
 
 ### 安装使用（推荐）
 
-1. 到 [Releases](https://github.com/WakuOOXX/book-source-aggregator/releases/latest) 下载 `书源聚合下载器-1.31.zip`；
+1. 到 [Releases](https://github.com/WakuOOXX/book-source-aggregator/releases/latest) 下载 `book-source-aggregator-v1.31-windows-x64.zip`；
 2. 解压后运行里面的 `书源聚合下载器-Setup-1.31.exe`，安装时可自选目录；
 3. 首次启动自动播种一份内置书源清单，直接搜书即可。
 
