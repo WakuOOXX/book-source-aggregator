@@ -1,7 +1,7 @@
 ; 书源聚合下载器 安装脚本 (Inno Setup 6)
 ; 构建 (仓库根): build-installer.bat, 或直接
 ;   ISCC.exe /DAppVersion=1.31 /DChineseIsl="<简中语言文件路径>" installer\setup.iss
-; 前置: installer\staging\ 已组装好 (前端 publish 输出 + bookdl-backend.exe + seed\bookSource.json)。
+; 前置: installer\staging\ 已组装好 (前端 publish 输出 + 后端 onedir: bookdl-backend.exe + _internal\ + seed\bookSource.json)。
 ;
 ; 数据目录约定: 运行时数据在 %LOCALAPPDATA%\BookSourceAggregator (可在设置页改),
 ; 卸载只删程序本体, 不动用户数据/已下载的书。

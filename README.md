@@ -88,7 +88,7 @@ dotnet test  frontends/winui/NovelDownloader.sln -c Debug
 
 **提示「目录为空」？** 这个源要么要登录要么改版了，程序自动换下一个。带 JS 的源得装 mini-racer（安装包已内置），要登录的去登录头页抓 Cookie。
 
-**杀软报毒？** PyInstaller 单文件 exe 偶发误报，换个目录装或加白名单，实在介意就源码跑。
+**杀软报毒？** 未签名的程序偶发启发式误报，加白名单或换个目录装就行，实在介意就源码跑。
 
 ## 免责声明
 

@@ -4,11 +4,13 @@ setlocal
 cd /d "%~dp0"
 
 rem ============================================================
-rem  书源聚合下载器 安装包一键构建
-rem  链路: 冻结后端 (PyInstaller onefile) → 发布前端 (self-contained)
-rem        → 组装 installer\staging → Inno Setup 编译 → dist\ 成品
-rem  前置: dotnet SDK / .build-venv (Python 3.12 + pyinstaller)
-rem        / Inno Setup 6 / 构建机本地 shuyuan\bookSource.json (种子书源, 不入库)
+rem  Book DL aggregator - one-shot installer build  (NOTE: keep all
+rem  rem-lines ASCII: cmd under chcp 65001 intermittently desyncs on
+rem  multibyte rem lines and executes the tail as a bogus command.)
+rem  pipeline: freeze backend (PyInstaller onedir) -> publish frontend
+rem  (self-contained) -> assemble installer\staging -> Inno Setup -> dist\
+rem  prereq: dotnet SDK / .build-venv (Python 3.12 + pyinstaller)
+rem          / Inno Setup 6 / local shuyuan\bookSource.json (seed, not in git)
 rem ============================================================
 
 set VERSION=1.31
@@ -31,7 +33,7 @@ set "ISCC="
 where iscc >nul 2>nul && set "ISCC=iscc"
 if not defined ISCC if exist "%ProgramFiles(x86)%\Inno Setup 6\ISCC.exe" set "ISCC=%ProgramFiles(x86)%\Inno Setup 6\ISCC.exe"
 if not defined ISCC if exist "%ProgramFiles%\Inno Setup 6\ISCC.exe" set "ISCC=%ProgramFiles%\Inno Setup 6\ISCC.exe"
-rem winget 用户级安装落点 (JRSoftware.InnoSetup 无管理员时在这)。
+rem winget user-scope install lands here (JRSoftware.InnoSetup without admin).
 if not defined ISCC if exist "%LocalAppData%\Programs\Inno Setup 6\ISCC.exe" set "ISCC=%LocalAppData%\Programs\Inno Setup 6\ISCC.exe"
 if not defined ISCC (
     echo   [X] 缺 Inno Setup 6。安装: winget install JRSoftware.InnoSetup
@@ -49,7 +51,7 @@ rmdir /s /q "%STAGING%" 2>nul
 rmdir /s /q "installer\dist" 2>nul
 rmdir /s /q "installer\build" 2>nul
 
-echo [2/5] 冻结后端 bookdl-backend.exe (PyInstaller onefile)...
+echo [2/5] 冻结后端 bookdl-backend (PyInstaller onedir)...
 "%VENV%\Scripts\pyinstaller.exe" installer\backend.spec --noconfirm --distpath installer\dist --workpath installer\build
 if errorlevel 1 (echo   [X] 后端冻结失败, 见上方 PyInstaller 输出。 & exit /b 1)
 
@@ -57,9 +59,9 @@ echo [3/5] 发布前端 (Release win-x64 self-contained)...
 dotnet publish frontends\winui\src\NovelDownloader\NovelDownloader.csproj -c Release -r win-x64 --self-contained true -o "%STAGING%"
 if errorlevel 1 (echo   [X] 前端发布失败。 & exit /b 1)
 
-echo [4/5] 组装 staging (后端 exe + 种子书源)...
-copy /y "installer\dist\bookdl-backend.exe" "%STAGING%\" >nul
-if errorlevel 1 (echo   [X] 找不到 installer\dist\bookdl-backend.exe。 & exit /b 1)
+echo [4/5] 组装 staging (后端 onedir 目录 + 种子书源)...
+if not exist "installer\dist\bookdl-backend\bookdl-backend.exe" (echo   [X] 找不到 installer\dist\bookdl-backend\ ^(onedir 产物^)。 & exit /b 1)
+xcopy /y /e /q "installer\dist\bookdl-backend\*" "%STAGING%\" >nul || (echo   [X] 后端目录拷贝失败。 & exit /b 1)
 mkdir "%STAGING%\seed" 2>nul
 copy /y shuyuan\bookSource.json "%STAGING%\seed\bookSource.json" >nul
 
